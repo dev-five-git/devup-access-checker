@@ -9,6 +9,7 @@ static OUTLINE_NONE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FONT_FACE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)@font-face\s*\{([^}]*)\}").unwrap());
+static IMPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)@import\s").unwrap());
 static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").unwrap());
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -19,6 +20,8 @@ pub struct CssFacts {
     pub font_faces: usize,
     /// font-display 가 없는 @font-face 수
     pub font_faces_without_display: usize,
+    /// `@import` 규칙 수 (스타일시트를 직렬로 더 받게 한다)
+    pub imports: usize,
 }
 
 impl CssFacts {
@@ -27,6 +30,7 @@ impl CssFacts {
         self.has_focus_visible |= other.has_focus_visible;
         self.font_faces += other.font_faces;
         self.font_faces_without_display += other.font_faces_without_display;
+        self.imports += other.imports;
     }
 }
 
@@ -35,6 +39,7 @@ pub fn analyze(css: &str) -> CssFacts {
     let mut f = CssFacts {
         outline_removed: OUTLINE_NONE.find_iter(&css).count(),
         has_focus_visible: css.contains(":focus-visible"),
+        imports: IMPORT.find_iter(&css).count(),
         ..Default::default()
     };
     for c in FONT_FACE.captures_iter(&css) {
@@ -53,7 +58,7 @@ mod tests {
     #[test]
     fn analyzes_css() {
         let f = analyze(
-            "/* outline:none; */ a:focus{outline:none} b{outline: 0 !important;} c{outline:1px solid}\
+            "@import url(a.css); /* @import x; */ /* outline:none; */ a:focus{outline:none} b{outline: 0 !important;} c{outline:1px solid}\
              .x:focus-visible{} @font-face{font-family:A;src:url(a.woff2)} @font-face{font-family:B;font-display:swap}",
         );
         assert_eq!(
@@ -62,7 +67,8 @@ mod tests {
                 outline_removed: 2,
                 has_focus_visible: true,
                 font_faces: 2,
-                font_faces_without_display: 1
+                font_faces_without_display: 1,
+                imports: 1,
             }
         );
     }

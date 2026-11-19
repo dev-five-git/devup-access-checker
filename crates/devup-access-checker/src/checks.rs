@@ -129,6 +129,23 @@ pub struct PageWeight {
     /// Content-Length 를 알 수 없었던 이미지 수
     pub images_unknown: usize,
     pub image_bytes: u64,
+    /// [`LARGE_SCRIPT_BYTES`] 를 넘는 스크립트 (URL, 바이트), 큰 순
+    pub large_scripts: Vec<(String, u64)>,
+    /// [`LARGE_IMAGE_BYTES`] 를 넘는 이미지 (URL, 바이트), 큰 순
+    pub large_images: Vec<(String, u64)>,
+}
+
+/// 큰 스크립트 기준 (압축 해제 바이트)
+pub const LARGE_SCRIPT_BYTES: u64 = 500 * 1024;
+/// 큰 이미지 기준 (전송 바이트)
+pub const LARGE_IMAGE_BYTES: u64 = 500 * 1024;
+
+/// 기준을 넘는 항목만 큰 순으로 최대 10개.
+pub fn largest(items: impl Iterator<Item = (String, u64)>, limit: u64) -> Vec<(String, u64)> {
+    let mut v: Vec<(String, u64)> = items.filter(|(_, n)| *n > limit).collect();
+    v.sort_by(|a, b| b.1.cmp(&a.1).then_with(|| a.0.cmp(&b.0)));
+    v.truncate(10);
+    v
 }
 
 /// 클라이언트 측 리다이렉트 한 단계 (meta refresh / JavaScript).
@@ -1436,6 +1453,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     extended_checks(&mut o, i, &robots);
     more_checks(&mut o, i, &robots);
     canonical_hreflang_weight_checks(&mut o, i);
+    deep_checks(&mut o, i);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -3086,6 +3104,225 @@ fn site_checks(o: &mut Out, i: &Inputs, site: &SiteSample) {
     );
 }
 
+/// 추가 접근성·성능 항목 (HTML 정적 분석 + 이미 받은 리소스 크기).
+fn deep_checks(o: &mut Out, i: &Inputs) {
+    use Category::*;
+    let m = &i.facts.more;
+    let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
+
+    // ===== 접근성 =====
+    o.push(
+        "accessibility.invalid_aria_role",
+        Accessibility,
+        "ARIA 명세에 없는 role",
+        count_presence(m.invalid_roles.len(), m.role_elements),
+        list(&m.invalid_roles),
+        None,
+    );
+    o.push(
+        "accessibility.invalid_aria_attr",
+        Accessibility,
+        "ARIA 명세에 없는 aria-* 속성",
+        count_presence(m.invalid_aria_attrs.len(), m.aria_attr_count),
+        list(&m.invalid_aria_attrs),
+        None,
+    );
+    o.push(
+        "accessibility.role_img_unnamed",
+        Accessibility,
+        "이름 없는 role=\"img\"",
+        count_presence(m.role_img_unnamed, m.role_img),
+        Some(json!({ "total": m.role_img, "unnamed": m.role_img_unnamed })),
+        None,
+    );
+    o.push(
+        "accessibility.video_captions_missing",
+        Accessibility,
+        "자막 트랙 없는 video",
+        count_presence(m.videos_without_captions, m.videos),
+        Some(json!({ "total": m.videos, "missing": m.videos_without_captions })),
+        Some("<track kind=captions|subtitles> 기준, 소리 없는(muted) 영상 제외. 영상에 자막이 입혀진(open caption) 경우는 알 수 없음".into()),
+    );
+    o.push(
+        "accessibility.area_alt_missing",
+        Accessibility,
+        "alt 없는 이미지맵 area",
+        count_presence(m.areas_without_alt, m.areas),
+        Some(json!({ "total": m.areas, "missing": m.areas_without_alt })),
+        None,
+    );
+    o.push(
+        "accessibility.object_alt_missing",
+        Accessibility,
+        "대체 텍스트 없는 object/embed",
+        count_presence(m.objects_without_alt, m.objects),
+        Some(json!({ "total": m.objects, "missing": m.objects_without_alt })),
+        None,
+    );
+    o.push(
+        "accessibility.element_lang_invalid",
+        Accessibility,
+        "본문 요소의 잘못된 lang 값",
+        count_presence(m.invalid_element_langs.len(), m.element_langs),
+        list(&m.invalid_element_langs),
+        None,
+    );
+    o.push(
+        "accessibility.nested_interactive",
+        Accessibility,
+        "링크·버튼 안의 인터랙티브 요소",
+        count_presence(m.nested_interactive, m.interactive_containers),
+        Some(json!({ "containers": m.interactive_containers, "nested": m.nested_interactive })),
+        None,
+    );
+    o.push(
+        "accessibility.list_structure_invalid",
+        Accessibility,
+        "잘못된 목록 구조 (ul/ol 밖 li 등)",
+        count_presence(m.list_violations, m.list_elements),
+        Some(json!(m.list_violations)),
+        None,
+    );
+    o.push(
+        "accessibility.aria_hidden_root",
+        Accessibility,
+        "html/body 에 aria-hidden=\"true\"",
+        Presence::from_bool(m.aria_hidden_root),
+        None,
+        None,
+    );
+    let refresh_delay = i
+        .facts
+        .meta_refresh
+        .as_deref()
+        .and_then(signals::refresh_delay);
+    o.push(
+        "accessibility.timed_refresh",
+        Accessibility,
+        "시간 제한 자동 새로고침 (meta refresh 지연)",
+        Presence::from_bool(refresh_delay.is_some_and(|d| d > 0.0)),
+        refresh_delay.map(|d| json!(d)),
+        None,
+    );
+    o.push(
+        "accessibility.duplicate_accesskeys",
+        Accessibility,
+        "중복 accesskey",
+        count_presence(m.duplicate_accesskeys.len(), m.accesskeys),
+        list(&m.duplicate_accesskeys),
+        None,
+    );
+    o.push(
+        "accessibility.presentation_focusable",
+        Accessibility,
+        "초점을 받는 요소의 role=presentation/none",
+        count_presence(m.presentation_focusable, m.presentation_roles),
+        Some(json!({ "total": m.presentation_roles, "focusable": m.presentation_focusable })),
+        None,
+    );
+
+    // ===== 성능 =====
+    o.push(
+        "performance.lcp_image_lazy",
+        Performance,
+        "첫 이미지(LCP 후보) 지연 로딩",
+        if m.body_images == 0 {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(m.first_image_lazy)
+        },
+        None,
+        Some("본문 첫 <img> 기준. 실제 LCP 요소는 렌더링해야 알 수 있음".into()),
+    );
+    o.push(
+        "performance.fetchpriority_high",
+        Performance,
+        "fetchpriority=\"high\" 지정",
+        Presence::from_bool(m.fetchpriority_high > 0),
+        Some(json!(m.fetchpriority_high)),
+        None,
+    );
+    o.push(
+        "performance.document_write",
+        Performance,
+        "인라인 스크립트의 document.write",
+        Presence::from_bool(m.document_write),
+        None,
+        None,
+    );
+    let css_imports = i.facts.extra.inline_css.imports
+        + i.extended
+            .external_css
+            .as_ref()
+            .map_or(0, |c| c.facts.imports);
+    o.push(
+        "performance.css_import",
+        Performance,
+        "CSS @import",
+        Presence::from_bool(css_imports > 0),
+        Some(json!({
+            "inline": i.facts.extra.inline_css.imports,
+            "external": i.extended.external_css.as_ref().map(|c| c.facts.imports),
+        })),
+        Some("HTML 안 <style> + 외부 CSS 표본 기준".into()),
+    );
+    o.push(
+        "performance.duplicate_scripts",
+        Performance,
+        "중복으로 넣은 스크립트",
+        count_presence(m.duplicate_scripts.len(), m.script_srcs),
+        list(&m.duplicate_scripts),
+        None,
+    );
+    o.push(
+        "performance.inline_code_bytes",
+        Performance,
+        "인라인 스크립트·스타일 크기",
+        Presence::from_bool(m.inline_script_bytes + m.inline_style_bytes > 0),
+        Some(json!({ "script": m.inline_script_bytes, "style": m.inline_style_bytes })),
+        Some("JSON 데이터 블록(JSON-LD 등)은 제외".into()),
+    );
+    let no_store = header(&i.page.headers, "cache-control")
+        .is_some_and(|c| c.to_ascii_lowercase().contains("no-store"));
+    o.push(
+        "performance.bfcache_blocked",
+        Performance,
+        "bfcache 차단 요인 (no-store, unload)",
+        Presence::from_bool(no_store || m.unload_handler),
+        Some(json!({ "cacheControlNoStore": no_store, "unloadHandler": m.unload_handler })),
+        None,
+    );
+    if let Some(w) = &i.extended.page_weight {
+        let files = |v: &[(String, u64)]| {
+            json!(
+                v.iter()
+                    .map(|(u, n)| json!({ "url": u, "bytes": n }))
+                    .collect::<Vec<_>>()
+            )
+        };
+        o.push(
+            "performance.large_scripts",
+            Performance,
+            "큰 스크립트 파일 (500KB 초과)",
+            count_presence(w.large_scripts.len(), w.js_checked),
+            Some(files(&w.large_scripts)),
+            Some(format!("압축 해제 기준, 표본 {}개", w.js_checked)),
+        );
+        o.push(
+            "performance.large_images",
+            Performance,
+            "큰 이미지 파일 (500KB 초과)",
+            count_presence(w.large_images.len(), w.images_checked - w.images_unknown),
+            Some(files(&w.large_images)),
+            Some(format!(
+                "Content-Length 기준, 표본 {}개 중 크기 확인 {}개",
+                w.images_checked,
+                w.images_checked - w.images_unknown
+            )),
+        );
+    }
+}
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -3695,6 +3932,67 @@ mod tests {
         assert_eq!(
             run(CertMarkSignals::default(), 0).presence,
             Presence::Unknown
+        );
+    }
+
+    #[test]
+    fn deep_accessibility_and_performance_items() {
+        let mut fx = Fx::failing();
+        let html = r#"<html><head><meta http-equiv="refresh" content="30">
+<style>@import url(a.css);</style></head>
+<body><img src="/hero.jpg" loading="lazy"><div role="buton"></div>
+<script>document.write("x")</script></body></html>"#;
+        fx.page = page("https://a.com/", html);
+        fx.page
+            .headers
+            .insert("cache-control", "no-store".parse().unwrap());
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        fx.extended.page_weight = Some(PageWeight {
+            js_total: 2,
+            js_checked: 2,
+            images_checked: 3,
+            images_unknown: 1,
+            large_scripts: largest(
+                [("a.js".to_string(), 900_000), ("b.js".to_string(), 10)].into_iter(),
+                LARGE_SCRIPT_BYTES,
+            ),
+            large_images: largest(
+                [("x.png".into(), 600_000), ("y.png".into(), 700_000)].into_iter(),
+                LARGE_IMAGE_BYTES,
+            ),
+            ..Default::default()
+        });
+        let c = fx.run();
+        for id in [
+            "accessibility.invalid_aria_role",
+            "accessibility.timed_refresh",
+            "performance.lcp_image_lazy",
+            "performance.document_write",
+            "performance.css_import",
+            "performance.inline_code_bytes",
+            "performance.bfcache_blocked",
+            "performance.large_scripts",
+            "performance.large_images",
+        ] {
+            assert_eq!(get(&c, id).presence, Presence::Present, "{id}");
+        }
+        let imgs = get(&c, "performance.large_images").value.as_ref().unwrap();
+        assert_eq!(imgs[0]["url"], "y.png", "큰 순");
+        assert_eq!(
+            get(&c, "accessibility.video_captions_missing").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "performance.fetchpriority_high").presence,
+            Presence::Missing
+        );
+
+        // 이미지가 없는 페이지
+        fx.facts = crate::html::extract("<html><body></body></html>", &fx.page.final_url);
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "performance.lcp_image_lazy").presence,
+            Presence::NotApplicable
         );
     }
 }

@@ -302,6 +302,19 @@ Rust 1.88 이상 (CI에서 확인).
 | `accessibility.autocomplete_missing` | 개인정보 입력란 autocomplete 누락 |
 | `accessibility.html_lang_valid` | html lang 형식 (BCP 47) |
 | `accessibility.outline_removed` | 초점 표시 제거 (outline: none) |
+| `accessibility.invalid_aria_role` | ARIA 명세에 없는 role |
+| `accessibility.invalid_aria_attr` | ARIA 명세에 없는 aria-* 속성 |
+| `accessibility.role_img_unnamed` | 이름 없는 role="img" |
+| `accessibility.video_captions_missing` | 자막 트랙 없는 video |
+| `accessibility.area_alt_missing` | alt 없는 이미지맵 area |
+| `accessibility.object_alt_missing` | 대체 텍스트 없는 object/embed |
+| `accessibility.element_lang_invalid` | 본문 요소의 잘못된 lang 값 |
+| `accessibility.nested_interactive` | 링크·버튼 안의 인터랙티브 요소 |
+| `accessibility.list_structure_invalid` | 잘못된 목록 구조 (ul/ol 밖 li 등) |
+| `accessibility.aria_hidden_root` | html/body 에 aria-hidden="true" |
+| `accessibility.timed_refresh` | 시간 제한 자동 새로고침 (meta refresh 지연) |
+| `accessibility.duplicate_accesskeys` | 중복 accesskey |
+| `accessibility.presentation_focusable` | 초점을 받는 요소의 role=presentation/none |
 | `trust.privacy_policy` | 개인정보처리방침 링크 |
 | `trust.terms` | 이용약관 링크 |
 | `trust.phone` | 전화번호 링크 (tel:) |
@@ -343,6 +356,15 @@ Rust 1.88 이상 (CI에서 확인).
 | `performance.external_css` | 외부 CSS 분석 |
 | `performance.font_face_without_display` | font-display 없는 @font-face |
 | `performance.page_weight` | 페이지 리소스 무게 |
+| `performance.lcp_image_lazy` | 첫 이미지(LCP 후보) 지연 로딩 |
+| `performance.fetchpriority_high` | fetchpriority="high" 지정 |
+| `performance.document_write` | 인라인 스크립트의 document.write |
+| `performance.css_import` | CSS @import |
+| `performance.duplicate_scripts` | 중복으로 넣은 스크립트 |
+| `performance.inline_code_bytes` | 인라인 스크립트·스타일 크기 |
+| `performance.bfcache_blocked` | bfcache 차단 요인 (no-store, unload) |
+| `performance.large_scripts` | 큰 스크립트 파일 (500KB 초과) |
+| `performance.large_images` | 큰 이미지 파일 (500KB 초과) |
 | `site.pages_sampled` | 표본 페이지 수집 |
 | `site.failed_pages` | 표본 중 2xx 아닌 페이지 |
 | `site.duplicate_titles` | 페이지 간 중복 title |

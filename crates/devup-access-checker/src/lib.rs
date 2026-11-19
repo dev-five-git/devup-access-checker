@@ -21,6 +21,7 @@ mod fetch;
 mod html;
 mod llms;
 mod model;
+mod more;
 mod robots;
 mod signals;
 mod sitemap;
@@ -605,40 +606,53 @@ impl Checker {
                 return None;
             }
             let x = &facts.extra;
-            let js: Vec<usize> = stream::iter(sample(&x.script_urls, MAX_JS_FILES))
+            let js: Vec<(String, usize)> = stream::iter(sample(&x.script_urls, MAX_JS_FILES))
                 .map(|u| {
                     let probe = &probe;
                     async move {
                         let url = Url::parse(u).ok()?;
-                        fetch::count_bytes(probe, &url, 20 * 1024 * 1024).await.ok()
+                        let n = fetch::count_bytes(probe, &url, 20 * 1024 * 1024)
+                            .await
+                            .ok()?;
+                        Some((u.clone(), n))
                     }
                 })
                 .buffer_unordered(8)
                 .filter_map(|x| async move { x })
                 .collect()
                 .await;
-            let imgs: Vec<Option<u64>> = stream::iter(sample(&x.image_urls, MAX_IMAGES))
+            let imgs: Vec<(String, Option<u64>)> = stream::iter(sample(&x.image_urls, MAX_IMAGES))
                 .map(|u| {
                     let probe = &probe;
                     async move {
                         let url = Url::parse(u).ok()?;
-                        fetch::head_length(probe, &url)
+                        let len = fetch::head_length(probe, &url)
                             .await
                             .ok()
-                            .and_then(|(_, len)| len)
+                            .and_then(|(_, len)| len);
+                        Some((u.clone(), len))
                     }
                 })
                 .buffer_unordered(8)
+                .filter_map(|x| async move { x })
                 .collect()
                 .await;
             Some(checks::PageWeight {
                 js_total: x.script_urls.len(),
                 js_checked: js.len(),
-                js_bytes: js.iter().sum(),
+                js_bytes: js.iter().map(|(_, n)| n).sum(),
                 images_total: x.image_urls.len(),
                 images_checked: imgs.len(),
-                images_unknown: imgs.iter().filter(|l| l.is_none()).count(),
-                image_bytes: imgs.iter().flatten().sum(),
+                images_unknown: imgs.iter().filter(|(_, l)| l.is_none()).count(),
+                image_bytes: imgs.iter().filter_map(|(_, l)| *l).sum(),
+                large_scripts: checks::largest(
+                    js.iter().map(|(u, n)| (u.clone(), *n as u64)),
+                    checks::LARGE_SCRIPT_BYTES,
+                ),
+                large_images: checks::largest(
+                    imgs.iter().filter_map(|(u, l)| l.map(|l| (u.clone(), l))),
+                    checks::LARGE_IMAGE_BYTES,
+                ),
             })
         };
 
