@@ -3110,6 +3110,19 @@ fn deep_checks(o: &mut Out, i: &Inputs) {
     let m = &i.facts.more;
     let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
 
+    // ===== CSR 셸 =====
+    let text_len = i.facts.body_text_len;
+    o.push(
+        "content.csr_shell",
+        Content,
+        "CSR 셸 추정 (정적 HTML 본문이 거의 없음)",
+        Presence::from_bool(text_len < CSR_SHELL_TEXT_LEN && m.script_srcs > 0),
+        Some(json!({ "bodyTextLength": text_len, "scripts": m.script_srcs })),
+        Some(format!(
+            "본문 텍스트 {CSR_SHELL_TEXT_LEN}자 미만 + 외부 스크립트 기준. present 면 본문·접근성 항목이 브라우저 렌더링 결과와 다를 수 있음"
+        )),
+    );
+
     // ===== 접근성 =====
     o.push(
         "accessibility.invalid_aria_role",
@@ -3994,5 +4007,14 @@ mod tests {
             get(&c, "performance.lcp_image_lazy").presence,
             Presence::NotApplicable
         );
+        assert_eq!(get(&c, "content.csr_shell").presence, Presence::Missing);
+
+        // 본문 없이 번들 스크립트만 있는 CSR 셸
+        fx.facts = crate::html::extract(
+            r#"<html><body><div id="root"></div><script src="/app.js"></script></body></html>"#,
+            &fx.page.final_url,
+        );
+        let c = fx.run();
+        assert_eq!(get(&c, "content.csr_shell").presence, Presence::Present);
     }
 }

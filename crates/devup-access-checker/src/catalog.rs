@@ -116,6 +116,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
     ("content.h2", Content, "h2 태그"),
     ("content.img_alt_missing", Content, "alt 누락 이미지"),
     ("content.body_text", Content, "정적 HTML body 텍스트"),
+    (
+        "content.csr_shell",
+        Content,
+        "CSR 셸 추정 (정적 HTML 본문이 거의 없음)",
+    ),
     ("content.internal_links", Content, "내부 링크"),
     ("content.external_links", Content, "외부 링크"),
     (

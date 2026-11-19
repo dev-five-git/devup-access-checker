@@ -159,6 +159,7 @@ Rust 1.88 이상 (CI에서 확인).
 | `content.h2` | h2 태그 |
 | `content.img_alt_missing` | alt 누락 이미지 |
 | `content.body_text` | 정적 HTML body 텍스트 |
+| `content.csr_shell` | CSR 셸 추정 (정적 HTML 본문이 거의 없음). present 면 본문·접근성 항목이 실제 화면과 다를 수 있음 |
 | `content.internal_links` | 내부 링크 |
 | `content.external_links` | 외부 링크 |
 | `accessibility.cert_mark` | 정보통신접근성 품질인증 마크 |
