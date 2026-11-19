@@ -35,7 +35,9 @@ devup-access-checker a.com b.com --only-missing
 | `--pages <수>` | 여러 페이지 표본 수 (기본 10, 0이면 생략) |
 | `--timeout <초>` | 대상 페이지 timeout (기본 30) |
 
-종료 코드: `0` 성공, `2` 하나 이상의 URL을 가져오지 못함.
+URL을 여러 개 주면 동시에 점검하고, 결과는 입력 순서대로 출력합니다. 종료 코드: `0` 성공, `2` 하나 이상의 URL을 가져오지 못함.
+
+옵션으로 생략한 항목도 결과에서 빠지지 않고 `unknown`으로 남습니다. 결과의 항목 구성은 옵션과 대상에 관계없이 항상 같습니다.
 
 ## 라이브러리
 
@@ -46,6 +48,8 @@ let report = Checker::default().check("devfive.kr").await?;
 if report.get("geo.llms_txt").map(|c| c.presence) == Some(Presence::Missing) { /* ... */ }
 ```
 
+`report.checks`는 항상 [`CATALOG`](crates/devup-access-checker/src/catalog.rs)와 같은 id를 같은 순서로 담습니다. 점검을 실행하지 않고 전체 항목 목록(id, 분류, 항목명)이 필요하면 `devup_access_checker::CATALOG`를 쓰면 됩니다. 항목 id는 버전이 바뀌어도 의미가 유지됩니다.
+
 `html::extract`, `robots::Robots`, `sitemap::summarize`, `signals::*`는 네트워크 없이 단독으로도 쓸 수 있습니다.
 
 ## 대상 페이지가 차단되거나 리다이렉트될 때
@@ -53,7 +57,7 @@ if report.get("geo.llms_txt").map(|c| c.presence) == Some(Presence::Missing) { /
 - **클라이언트 측 리다이렉트:** 지연 5초 이하의 meta refresh와, 본문이 거의 없는 페이지의 `location.href = "..."` · `location.replace("...")`는 검색엔진처럼 따라가서 최종 페이지를 분석합니다(최대 3회). 따라간 기록은 `transport.meta_refresh_redirect` · `transport.js_redirect`에 남습니다.
 - **차단·오류 페이지:** 대상 페이지가 2xx가 아니거나 봇 차단 페이지(Cloudflare, Akamai, F5, Imperva 등)이면 리포트의 `blocked`에 사유가 들어갑니다. 이때 페이지 HTML·헤더에서 나온 항목은 모두 `unknown`이 됩니다. 실제 페이지를 보지 못했는데 "없음"으로 판정하지 않기 위해서입니다. robots.txt·sitemap 같은 사이트 파일 항목은 그대로 판정합니다.
 - **부속 요청의 차단:** robots.txt·llms.txt·표본 페이지 등이 봇 차단 페이지로 돌아오면 "없음"이 아니라 `unknown`입니다. AI 크롤러 User-Agent 요청이 차단 페이지를 받으면 `geo.ua_access.*`는 `missing`이고, 값의 `challenge`에 공급자가 남습니다.
-- **요청 예절과 속도:** 같은 호스트에는 동시에 최대 8개 요청만 보내고, 연결 실패는 한 번 재시도합니다(timeout은 재시도하지 않음). 서로 의존하지 않는 요청은 모두 동시에 보내며, `http://` 확인은 5초 안에 끝냅니다. `DEVUP_ACCESS_CHECKER_TRACE=1` 환경 변수를 주면 요청별 대기·소요 시간을 stderr로 출력합니다.
+- **요청 예절과 속도:** 같은 호스트에는 동시에 최대 8개 요청만 보내고, 연결 실패는 한 번 재시도합니다(timeout·DNS 실패는 재시도하지 않음). 대상 페이지 본문은 15MB까지만 받습니다. 서로 의존하지 않는 요청은 모두 동시에 보내며, `http://` 확인은 5초 안에 끝냅니다. `DEVUP_ACCESS_CHECKER_TRACE=1` 환경 변수를 주면 요청별 대기·소요 시간을 stderr로 출력합니다.
 
 ## Presence
 
@@ -65,6 +69,10 @@ if report.get("geo.llms_txt").map(|c| c.presence) == Some(Presence::Missing) { /
 | `not_applicable` | 전제가 없어 검사 대상 아님 (예: 링크가 없어서 접근 검증 불가) |
 
 `present`는 "좋다"는 뜻이 아니라 "있다"는 뜻입니다. 그래서 `indexing.meta_noindex`, `transport.mixed_content`, `content.img_alt_missing`처럼 부정적인 항목은 `present`가 곧 문제가 발견되었다는 의미입니다.
+
+## 지원 Rust 버전
+
+Rust 1.88 이상 (CI에서 확인).
 
 ## 배포
 

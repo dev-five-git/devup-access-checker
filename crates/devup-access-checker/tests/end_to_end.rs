@@ -140,8 +140,9 @@ async fn reports_presence_for_mock_site() {
     assert_eq!(presence(&r, "links.favicon"), Presence::Present);
     assert_eq!(presence(&r, "links.og_image"), Presence::Missing);
     assert_eq!(presence(&r, "links.manifest"), Presence::NotApplicable);
-    assert!(
-        r.get("transport.http_to_https_redirect").is_none(),
+    assert_eq!(
+        presence(&r, "transport.http_to_https_redirect"),
+        Presence::Unknown,
         "transport checks disabled"
     );
 }
@@ -248,8 +249,9 @@ async fn redirects_declared_sitemaps_and_site_files() {
         presence(&r, "transport.temporary_redirect"),
         Presence::Present
     );
-    assert!(
-        r.get("transport.host_variant_duplicate").is_none(),
+    assert_eq!(
+        presence(&r, "transport.host_variant_duplicate"),
+        Presence::NotApplicable,
         "IP host has no www variant"
     );
 
@@ -978,4 +980,53 @@ async fn follows_js_redirect_and_sitemap_file_redirect() {
     assert_eq!(presence(&r, "content.h1"), Presence::Present);
     assert_eq!(presence(&r, "crawling.sitemap_xml"), Presence::Present);
     assert_eq!(presence(&r, "geo.llms_txt"), Presence::Missing);
+}
+
+#[tokio::test]
+async fn id_set_is_fixed_regardless_of_options() {
+    let s = site().await;
+    let ids = |r: &Report| r.checks.iter().map(|c| c.id.clone()).collect::<Vec<_>>();
+    let catalog: Vec<String> = devup_access_checker::CATALOG
+        .iter()
+        .map(|(id, _, _)| (*id).to_string())
+        .collect();
+    let full = Checker::new(Options::default())
+        .check(&s.uri())
+        .await
+        .unwrap();
+    let off = Checker::new(Options {
+        check_links: false,
+        check_ai_user_agents: false,
+        check_transport: false,
+        check_resources: false,
+        page_samples: 0,
+        sitemap_samples: 0,
+        ..Default::default()
+    })
+    .check(&s.uri())
+    .await
+    .unwrap();
+    assert_eq!(ids(&full), catalog);
+    assert_eq!(ids(&off), catalog);
+    let skipped = off.get("links.canonical").unwrap();
+    assert_eq!(skipped.presence, Presence::Unknown);
+}
+
+/// README 의 점검 항목 표와 카탈로그가 어긋나지 않게 한다.
+#[test]
+fn readme_lists_every_catalog_id() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../README.md");
+    let Ok(readme) = std::fs::read_to_string(path) else {
+        return; // 패키지로 배포된 소스에는 워크스페이스 README 가 없다
+    };
+    let listed: std::collections::BTreeSet<&str> = readme
+        .lines()
+        .filter_map(|l| l.strip_prefix("| `")?.split_once("` |").map(|(id, _)| id))
+        .filter(|id| id.contains('.'))
+        .collect();
+    let catalog: std::collections::BTreeSet<&str> = devup_access_checker::CATALOG
+        .iter()
+        .map(|(id, _, _)| *id)
+        .collect();
+    assert_eq!(listed, catalog);
 }

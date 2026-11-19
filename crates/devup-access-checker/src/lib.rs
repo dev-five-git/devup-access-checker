@@ -13,6 +13,7 @@
 //! ```
 
 pub mod a11y;
+pub mod catalog;
 pub mod checks;
 pub mod css;
 pub mod extra;
@@ -31,6 +32,7 @@ use futures::future::join_all;
 use futures::stream::{self, StreamExt};
 use url::Url;
 
+pub use catalog::CATALOG;
 pub use model::{Category, Check, Presence, Report};
 
 pub const DEFAULT_USER_AGENT: &str = concat!(

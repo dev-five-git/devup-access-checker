@@ -3,6 +3,7 @@ name = "devup-access-checker"
 version = "0.0.0"
 description = "Collects SEO, GEO and web accessibility signals of a web page and reports what is present or missing"
 edition.workspace = true
+rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 homepage.workspace = true
@@ -23,6 +24,7 @@ serde_json.workspace = true
 thiserror = "2"
 tokio.workspace = true
 futures = "0.3"
+encoding_rs = "0.8"
 
 [dev-dependencies]
 wiremock = "0.6"

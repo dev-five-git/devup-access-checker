@@ -110,10 +110,12 @@ async fn main() -> ExitCode {
         ..Default::default()
     });
 
+    // 여러 URL 은 동시에 점검하고, 출력은 입력 순서를 따른다
+    let results = futures::future::join_all(cli.urls.iter().map(|u| checker.check(u))).await;
     let mut reports = Vec::new();
     let mut failed = false;
-    for url in &cli.urls {
-        match checker.check(url).await {
+    for result in results {
+        match result {
             Ok(r) => {
                 if let Format::Text = cli.format {
                     print_text(&r, cli.only_missing);

@@ -872,7 +872,12 @@ pub fn build(i: &Inputs) -> Vec<Check> {
         "HTML 크기(byte, 압축 해제)",
         Presence::Present,
         Some(json!(page.body_bytes)),
-        None,
+        page.truncated.then(|| {
+            format!(
+                "본문이 {}MB 를 넘어 앞부분만 분석함",
+                crate::fetch::MAX_PAGE_BYTES / 1024 / 1024
+            )
+        }),
     );
     match i.content_encoding {
         Some(Ok(enc)) => o.opt(
@@ -1016,6 +1021,15 @@ pub fn build(i: &Inputs) -> Vec<Check> {
                 Some(format!("대체 호스트 접속 불가: {e}")),
             ),
         }
+    } else if !matches!(base.host(), Some(url::Host::Domain(d)) if d.contains('.')) {
+        o.push(
+            "transport.host_variant_duplicate",
+            Transport,
+            "www/non-www 중복 노출",
+            Presence::NotApplicable,
+            None,
+            Some("IP·단일 레이블 호스트는 www 변형이 없음".into()),
+        );
     }
     let (p, n) = file_presence(&wk.security_txt);
     o.push(
@@ -1426,7 +1440,35 @@ pub fn build(i: &Inputs) -> Vec<Check> {
             ));
         }
     }
-    o.0
+    fill_catalog(o.0)
+}
+
+/// 카탈로그의 모든 id 를 카탈로그 순서로 담는다. 만들어지지 않은 항목(옵션으로 생략 등)은 unknown.
+pub fn fill_catalog(mut checks: Vec<Check>) -> Vec<Check> {
+    use crate::catalog::{CATALOG, position};
+    debug_assert!(
+        checks.iter().all(|c| position(&c.id).is_some()),
+        "카탈로그에 없는 id: {:?}",
+        checks
+            .iter()
+            .filter(|c| position(&c.id).is_none())
+            .map(|c| &c.id)
+            .collect::<Vec<_>>()
+    );
+    for (id, category, label) in CATALOG {
+        if !checks.iter().any(|c| c.id == *id) {
+            checks.push(Check {
+                id: (*id).to_string(),
+                category: *category,
+                label: (*label).to_string(),
+                presence: Presence::Unknown,
+                value: None,
+                note: Some("점검하지 않음 (옵션으로 생략했거나 수행 조건이 아님)".into()),
+            });
+        }
+    }
+    checks.sort_by_key(|c| position(&c.id).unwrap_or(usize::MAX));
+    checks
 }
 
 fn host_mismatch(o: &mut Out, id: &str, cat: Category, label: &str, raw: Option<&str>, base: &Url) {

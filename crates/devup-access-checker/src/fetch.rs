@@ -32,7 +32,7 @@ fn host_limit(url: &str) -> Arc<Semaphore> {
 static TRACE: LazyLock<bool> =
     LazyLock::new(|| std::env::var_os("DEVUP_ACCESS_CHECKER_TRACE").is_some());
 
-/// 호스트별 동시 요청 수를 제한하고, 연결 실패는 한 번 재시도한다 (timeout 은 재시도하지 않음).
+/// 호스트별 동시 요청 수를 제한하고, 연결 실패는 한 번 재시도한다 (timeout·DNS 실패는 재시도하지 않음).
 async fn send(client: &Client, method: Method, url: &str) -> Result<Response, reqwest::Error> {
     let limit = host_limit(url);
     let waited = Instant::now();
@@ -53,13 +53,30 @@ async fn send(client: &Client, method: Method, url: &str) -> Result<Response, re
             );
         }
         match result {
-            Err(e) if !retried && e.is_connect() && !e.is_timeout() => {
+            Err(e) if !retried && e.is_connect() && !e.is_timeout() && !is_dns_error(&e) => {
                 retried = true;
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
             r => return r,
         }
     }
+}
+
+/// DNS 조회 실패는 다시 시도해도 같은 결과라 재시도하지 않는다.
+fn is_dns_error(e: &reqwest::Error) -> bool {
+    let mut source: Option<&(dyn std::error::Error + 'static)> = std::error::Error::source(e);
+    while let Some(err) = source {
+        let text = err.to_string().to_ascii_lowercase();
+        if text.contains("dns error")
+            || text.contains("failed to lookup")
+            || text.contains("no such host")
+            || text.contains("name or service not known")
+        {
+            return true;
+        }
+        source = err.source();
+    }
+    false
 }
 
 pub(crate) async fn send_get(client: &Client, url: &str) -> Result<Response, reqwest::Error> {
@@ -84,6 +101,8 @@ pub struct Page {
     pub elapsed: Duration,
     /// 압축 해제 전 전송 크기는 알 수 없으므로 본문 바이트 수를 기록한다.
     pub body_bytes: usize,
+    /// 본문이 [`MAX_PAGE_BYTES`] 를 넘어 잘림
+    pub truncated: bool,
     /// 협상된 HTTP 버전 (예: "HTTP/2.0")
     pub version: String,
     /// 최종 연결의 TLS 서버 인증서 (https 일 때)
@@ -143,20 +162,58 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
         .get::<reqwest::tls::TlsInfo>()
         .and_then(|i| i.peer_certificate())
         .and_then(parse_certificate);
-    let body = res.text().await.map_err(|e| Error::Fetch {
+    let declared_len = res.content_length();
+    let mut res = res;
+    let mut buf = Vec::new();
+    let mut truncated = false;
+    while let Some(chunk) = res.chunk().await.map_err(|e| Error::Fetch {
         url: url.to_string(),
         reason: describe(&e),
-    })?;
+    })? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() >= MAX_PAGE_BYTES {
+            buf.truncate(MAX_PAGE_BYTES);
+            truncated = true;
+            break;
+        }
+    }
+    let body_bytes = if truncated {
+        declared_len.map_or(buf.len(), |n| (n as usize).max(buf.len()))
+    } else {
+        buf.len()
+    };
+    let body = decode_body(&buf, &headers);
     Ok(Page {
         status,
         final_url,
         headers,
-        body_bytes: body.len(),
+        body_bytes,
+        truncated,
         body,
         elapsed: started.elapsed(),
         version,
         certificate,
     })
+}
+
+/// 대상 페이지 본문은 이 크기까지만 받는다 (비정상적으로 큰 응답으로 인한 메모리 폭증 방지).
+pub const MAX_PAGE_BYTES: usize = 15 * 1024 * 1024;
+
+/// Content-Type 의 charset 으로 디코딩한다 (없거나 모르면 UTF-8, BOM 우선).
+fn decode_body(bytes: &[u8], headers: &HeaderMap) -> String {
+    let label = headers
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|ct| {
+            ct.split(';')
+                .filter_map(|p| p.trim().split_once('='))
+                .find(|(k, _)| k.trim().eq_ignore_ascii_case("charset"))
+                .map(|(_, v)| v.trim().trim_matches('"').to_string())
+        });
+    let encoding = label
+        .and_then(|l| encoding_rs::Encoding::for_label(l.as_bytes()))
+        .unwrap_or(encoding_rs::UTF_8);
+    encoding.decode(bytes).0.into_owned()
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -551,8 +608,18 @@ pub async fn probe_ua(
     client: &Client,
     url: &Url,
 ) -> Result<(u16, Url, Option<&'static str>), String> {
-    let (status, _, bytes, _) = fetch_bytes(client, url, 200_000).await?;
-    let challenge = crate::signals::bot_challenge(&String::from_utf8_lossy(&bytes));
-    // fetch_bytes 는 최종 URL 을 돌려주지 않으므로 다시 묻지 않고 요청 URL 을 기록한다
-    Ok((status, url.clone(), challenge))
+    let mut res = send_get(client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    let status = res.status().as_u16();
+    let final_url = res.url().clone();
+    let mut buf = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() >= 200_000 {
+            break;
+        }
+    }
+    let challenge = crate::signals::bot_challenge(&String::from_utf8_lossy(&buf));
+    Ok((status, final_url, challenge))
 }
