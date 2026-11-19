@@ -895,13 +895,13 @@ async fn probe_encoding(ua: &str, timeout: Duration, url: &Url) -> Result<Option
         .gzip(false)
         .brotli(false)
         .build()
-        .map_err(|e| e.to_string())?;
+        .expect("http client");
     let res = client
         .get(url.as_str())
         .header(reqwest::header::ACCEPT_ENCODING, "gzip, br")
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(fetch::describe_owned)?;
     Ok(res
         .headers()
         .get(reqwest::header::CONTENT_ENCODING)
@@ -1049,5 +1049,23 @@ mod tests {
         let links: Vec<String> = (0..5).map(|i| format!("https://a.com/l{i}")).collect();
         let (urls, s, l) = pick_page_samples(&locs, &links, &base, 2);
         assert_eq!((urls.len(), s, l), (2, 2, 0));
+    }
+
+    #[tokio::test]
+    async fn probe_encoding_reports_header_or_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-encoding", "br"))
+            .mount(&s)
+            .await;
+        let url = Url::parse(&s.uri()).unwrap();
+        let t = Duration::from_secs(5);
+        assert_eq!(
+            probe_encoding("t", t, &url).await.unwrap().as_deref(),
+            Some("br")
+        );
+        let closed = Url::parse("http://127.0.0.1:9/").unwrap();
+        assert!(probe_encoding("t", t, &closed).await.is_err());
     }
 }

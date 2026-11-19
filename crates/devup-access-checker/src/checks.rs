@@ -4017,4 +4017,54 @@ mod tests {
         let c = fx.run();
         assert_eq!(get(&c, "content.csr_shell").presence, Presence::Present);
     }
+
+    /// 헤더·메타 값이 있을 때만 실행되는 판정 경로.
+    #[test]
+    fn header_and_meta_dependent_values() {
+        let mut fx = Fx::failing();
+        let dup_ids: String = (0..21)
+            .map(|i| format!(r#"<p id="d{i}"></p><p id="d{i}"></p>"#))
+            .collect();
+        let html = format!(
+            r#"<html><head><meta name="robots" content="noindex, nofollow">
+<link rel="stylesheet" href="http://insecure.example/a.css"></head>
+<body><h2>무엇인가요?</h2><table role="presentation"><tr><td>x</td></tr></table>{dup_ids}</body></html>"#
+        );
+        fx.page = page("https://a.com/", &html);
+        fx.page
+            .headers
+            .insert("content-type", "text/html; charset=UTF-8".parse().unwrap());
+        fx.page
+            .headers
+            .insert("vary", "User-Agent".parse().unwrap());
+        fx.facts = crate::html::extract(&html, &fx.page.final_url);
+        let c = fx.run();
+        assert_eq!(get(&c, "indexing.meta_noindex").presence, Presence::Present);
+        assert_eq!(
+            get(&c, "crawling.vary_user_agent").presence,
+            Presence::Present
+        );
+        assert_eq!(get(&c, "geo.question_headings").presence, Presence::Present);
+        assert!(
+            get(&c, "accessibility.duplicate_ids").note.is_some(),
+            "20개 초과"
+        );
+        assert_eq!(
+            get(&c, "transport.mixed_content").presence,
+            Presence::Present
+        );
+        assert_eq!(
+            get(&c, "geo.tables").presence,
+            Presence::Missing,
+            "presentation 표 제외"
+        );
+        assert!(
+            get(&c, "meta.charset")
+                .value
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("utf-8")
+        );
+    }
 }

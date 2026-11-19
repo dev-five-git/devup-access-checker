@@ -83,6 +83,11 @@ fn is_dns_error(e: &reqwest::Error) -> bool {
     false
 }
 
+/// `map_err` 에 함수로 넘기기 위한 [`describe`].
+pub(crate) fn describe_owned(e: reqwest::Error) -> String {
+    describe(&e)
+}
+
 pub(crate) async fn send_get(client: &Client, url: &str) -> Result<Response, reqwest::Error> {
     send(client, Method::GET, url).await
 }
@@ -166,7 +171,7 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
     let certificate = res
         .extensions()
         .get::<reqwest::tls::TlsInfo>()
-        .and_then(|i| i.peer_certificate())
+        .and_then(reqwest::tls::TlsInfo::peer_certificate)
         .and_then(parse_certificate);
     let declared_len = res.content_length();
     let mut res = res;
@@ -481,9 +486,9 @@ pub async fn probe_link(client: &Client, raw: &str, base: &Url) -> LinkProbe {
 pub async fn probe_status_body(client: &Client, url: &Url) -> Result<(u16, String), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
-    let (body, _) = read_text(res, 65_536).await.map_err(|e| describe(&e))?;
+    let (body, _) = read_text(res, 65_536).await.map_err(describe_owned)?;
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         return Err(format!("봇 차단 응답({vendor})"));
     }
@@ -494,7 +499,7 @@ pub async fn probe_status_body(client: &Client, url: &Url) -> Result<(u16, Strin
 pub async fn probe_status(client: &Client, url: &Url) -> Result<(u16, Url), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     Ok((res.status().as_u16(), res.url().clone()))
 }
 
@@ -518,13 +523,13 @@ pub async fn redirect_chain(
         .timeout(timeout)
         .redirect(Policy::none())
         .build()
-        .map_err(|e| e.to_string())?;
+        .expect("http client");
     let mut hops = Vec::new();
     let mut current = url.clone();
     for _ in 0..=max {
         let res = send_get(&client, current.as_str())
             .await
-            .map_err(|e| describe(&e))?;
+            .map_err(describe_owned)?;
         let status = res.status().as_u16();
         hops.push(Hop {
             url: current.to_string(),
@@ -578,7 +583,7 @@ pub async fn fetch_bytes(
 ) -> Result<(u16, Option<String>, Vec<u8>, bool), String> {
     let mut res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let ct = res
         .headers()
@@ -586,7 +591,7 @@ pub async fn fetch_bytes(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let mut buf = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
         buf.extend_from_slice(&chunk);
         if buf.len() >= max {
             buf.truncate(max);
@@ -600,12 +605,12 @@ pub async fn fetch_bytes(
 pub async fn count_bytes(client: &Client, url: &Url, max: usize) -> Result<usize, String> {
     let mut res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     if !res.status().is_success() {
         return Err(format!("HTTP {}", res.status().as_u16()));
     }
     let mut n = 0;
-    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
         n += chunk.len();
         if n >= max {
             return Ok(max);
@@ -661,7 +666,7 @@ pub struct SamplePage {
 pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let final_url = res.url().clone();
     let header_noindex = res
@@ -672,7 +677,7 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
         .any(|v| v.to_ascii_lowercase().contains("noindex"));
     let (body, _) = read_text(res, MAX_SAMPLE_BYTES)
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         return Err(format!("봇 차단 응답({vendor})"));
     }
@@ -716,7 +721,7 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
 pub async fn probe_headers(client: &Client, url: &Url) -> Result<(u16, HeaderMap), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     Ok((res.status().as_u16(), res.headers().clone()))
 }
 
@@ -724,7 +729,7 @@ pub async fn probe_headers(client: &Client, url: &Url) -> Result<(u16, HeaderMap
 pub async fn head_length(client: &Client, url: &Url) -> Result<(u16, Option<u64>), String> {
     let res = send_head(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let len = res
         .headers()
         .get(reqwest::header::CONTENT_LENGTH)
@@ -740,11 +745,11 @@ pub async fn probe_ua(
 ) -> Result<(u16, Url, Option<&'static str>), String> {
     let mut res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let final_url = res.url().clone();
     let mut buf = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
         buf.extend_from_slice(&chunk);
         if buf.len() >= 200_000 {
             break;
@@ -1025,5 +1030,28 @@ mod tests {
                 .unwrap_err()
                 .starts_with("gzip")
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_location_and_header_noindex() {
+        let (_s, url) = serve(
+            "/r",
+            ResponseTemplate::new(301).insert_header("location", "http://["),
+        )
+        .await;
+        assert!(
+            redirect_chain("t", Duration::from_secs(5), &url, 3)
+                .await
+                .unwrap_err()
+                .contains("invalid Location")
+        );
+        let (_s, url) = serve(
+            "/p",
+            ResponseTemplate::new(200)
+                .insert_header("x-robots-tag", "googlebot: NOINDEX")
+                .set_body_string("<html><body>x</body></html>"),
+        )
+        .await;
+        assert!(probe_page(&client(), &url).await.unwrap().noindex);
     }
 }
