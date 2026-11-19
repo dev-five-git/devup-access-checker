@@ -41,7 +41,7 @@ if report.get("geo.llms_txt").map(|c| c.presence) == Some(Presence::Missing) { /
 - **클라이언트 측 리다이렉트:** 지연 5초 이하의 meta refresh와, 본문이 거의 없는 페이지의 `location.href = "..."` · `location.replace("...")`는 검색엔진처럼 따라가서 최종 페이지를 분석합니다(최대 3회). 따라간 기록은 `transport.meta_refresh_redirect` · `transport.js_redirect`에 남습니다.
 - **차단·오류 페이지:** 대상 페이지가 2xx가 아니거나 봇 차단 페이지(Cloudflare, Akamai, F5, Imperva 등)이면 리포트의 `blocked`에 사유가 들어갑니다. 이때 페이지 HTML·헤더에서 나온 항목은 모두 `unknown`이 됩니다. 실제 페이지를 보지 못했는데 "없음"으로 판정하지 않기 위해서입니다. robots.txt·sitemap 같은 사이트 파일 항목은 그대로 판정합니다.
 - **부속 요청의 차단:** robots.txt·llms.txt·표본 페이지 등이 봇 차단 페이지로 돌아오면 "없음"이 아니라 `unknown`입니다. AI 크롤러 User-Agent 요청이 차단 페이지를 받으면 `geo.ua_access.*`는 `missing`이고, 값의 `challenge`에 공급자가 남습니다.
-- **요청 예절:** 같은 호스트에는 동시에 최대 6개 요청만 보내고, timeout·연결 실패는 한 번 재시도합니다.
+- **요청 예절과 속도:** 같은 호스트에는 동시에 최대 8개 요청만 보내고, 연결 실패는 한 번 재시도합니다(timeout은 재시도하지 않음). 서로 의존하지 않는 요청은 모두 동시에 보내며, `http://` 확인은 5초 안에 끝냅니다. `DEVUP_ACCESS_CHECKER_TRACE=1` 환경 변수를 주면 요청별 대기·소요 시간을 stderr로 출력합니다.
 
 ## Presence
 

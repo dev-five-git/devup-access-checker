@@ -127,7 +127,7 @@ impl Checker {
         let started = Instant::now();
         let target = normalize_url(input)?;
         let opts = &self.options;
-        let client = fetch::build_client(&opts.user_agent, opts.page_timeout);
+        let client = fetch::build_page_client(&opts.user_agent, opts.page_timeout);
         let probe = fetch::build_client(&opts.user_agent, opts.probe_timeout);
 
         let mut page = fetch::fetch_page(&client, &target).await?;
@@ -221,7 +221,12 @@ impl Checker {
                 if http_url.set_scheme("http").is_err() {
                     return Err("cannot build http url".to_string());
                 }
-                fetch::probe_status(&probe, &http_url).await
+                // 80 포트를 막아 둔 사이트가 많아 짧게 본다
+                let quick = fetch::build_client(
+                    &opts.user_agent,
+                    opts.probe_timeout.min(Duration::from_secs(5)),
+                );
+                fetch::probe_status(&quick, &http_url).await
             };
             let enc_fut = probe_encoding(&opts.user_agent, opts.probe_timeout, &base);
             let chain_fut =
@@ -279,139 +284,82 @@ impl Checker {
             ads_url,
         ] = &urls;
         use fetch::Expected::{Binary, Json, PlainText, Xml};
-        let (
-            (sitemap, robots, llms, llms_full, ai_txt),
-            (
-                favicon_ico,
-                apple_touch_icon,
-                security_txt,
-                tdmrep,
-                apple_app_site_association,
-                assetlinks,
-                ads_txt,
-            ),
-            not_found,
-            links,
-            (http_version, encoding, redirect_chain, host_variant),
-            ai_ua,
-        ) = tokio::join!(
-            async {
-                tokio::join!(
-                    fetch::probe_file(&probe, sitemap_url, Xml),
-                    fetch::probe_file(&probe, robots_url, PlainText),
-                    fetch::probe_file(&probe, llms_url, PlainText),
-                    fetch::probe_file(&probe, llms_full_url, PlainText),
-                    fetch::probe_file(&probe, ai_url, PlainText),
-                )
-            },
-            async {
-                tokio::join!(
-                    fetch::probe_file(&probe, favicon_url, Binary),
-                    fetch::probe_file(&probe, apple_url, Binary),
-                    fetch::probe_file(&probe, security_url, PlainText),
-                    fetch::probe_file(&probe, tdm_url, Json),
-                    fetch::probe_file(&probe, aasa_url, Json),
-                    fetch::probe_file(&probe, assetlinks_url, Json),
-                    fetch::probe_file(&probe, ads_url, PlainText),
-                )
-            },
-            fetch::probe_status_body(&probe, not_found_url),
-            links_fut,
-            transport_fut,
-            ai_fut,
-        );
-        let well_known = checks::WellKnown {
-            favicon_ico,
-            apple_touch_icon,
-            security_txt,
-            tdmrep,
-            apple_app_site_association,
-            assetlinks,
-            ads_txt,
-        };
 
-        // robots.txt 에 선언된 sitemap 중 기본 경로와 다른 것 (최대 5개)
-        let mut declared_urls: Vec<Url> = Vec::new();
-        if robots.exists {
-            for raw in robots::Robots::parse(robots.body.as_deref().unwrap_or_default()).sitemaps {
-                if let Ok(u) = origin.join(&raw)
-                    && u != *sitemap_url
-                    && !declared_urls.contains(&u)
-                    && declared_urls.len() < 5
-                {
-                    declared_urls.push(u);
-                }
-            }
-        }
-        let declared = join_all(
-            declared_urls
-                .iter()
-                .map(|u| fetch::probe_file(&probe, u, Xml)),
-        )
-        .await;
-
-        // 분석 대상 sitemap 의 URL 표본 요청
-        let sample_urls: Vec<String> = match checks::pick_sitemap(&sitemap, &declared) {
-            Some(sm) if opts.sitemap_samples > 0 && !checks::is_gz(sm) => {
-                sitemap::summarize(sm.body.as_deref().unwrap_or_default())
-                    .locs
-                    .into_iter()
-                    .take(opts.sitemap_samples)
-                    .collect()
-            }
-            _ => Vec::new(),
-        };
-        let samples = join_all(sample_urls.into_iter().map(|raw| {
-            let probe = &probe;
-            async move {
-                let result = match Url::parse(&raw) {
-                    Ok(u) => fetch::probe_page(probe, &u).await,
-                    Err(e) => Err(format!("invalid url: {e}")),
-                };
-                (raw, result)
-            }
-        }))
-        .await;
-        let sitemap_detail = checks::SitemapDetail { declared, samples };
-
-        // 여러 페이지 표본: sitemap(index 면 첫 하위 sitemap) → 내부 링크 순으로 같은 호스트 URL 수집
-        let site = if opts.page_samples == 0 {
-            None
-        } else {
-            let mut locs: Vec<String> = Vec::new();
-            if let Some(sm) = checks::pick_sitemap(&sitemap, &sitemap_detail.declared)
-                && !checks::is_gz(sm)
-            {
-                let summary = sitemap::summarize(sm.body.as_deref().unwrap_or_default());
-                if summary.is_index {
-                    if let Some(child) = summary.locs.first().and_then(|u| Url::parse(u).ok()) {
-                        let p = fetch::probe_file(&probe, &child, Xml).await;
-                        if p.exists && !checks::is_gz(&p) {
-                            locs = sitemap::summarize(p.body.as_deref().unwrap_or_default()).locs;
-                        }
-                    }
-                } else {
-                    locs = summary.locs;
-                }
-            }
-            let (urls, from_sitemap, from_links) = pick_page_samples(
-                &locs,
-                &facts.extra.internal_link_urls,
-                &base,
-                opts.page_samples,
+        // ── sitemap 체인: robots/sitemap → 선언 sitemap → (index 면 첫 하위) → 표본 페이지 (순서 의존) ──
+        let sitemap_chain = async {
+            let (sitemap, robots) = tokio::join!(
+                fetch::probe_file(&probe, sitemap_url, Xml),
+                fetch::probe_file(&probe, robots_url, PlainText),
             );
-            let source = match (from_sitemap > 0, from_links > 0) {
-                (true, true) => "sitemap+internal_links",
-                (true, false) => "sitemap",
-                _ => "internal_links",
+            let mut declared_urls: Vec<Url> = Vec::new();
+            if robots.exists {
+                for raw in
+                    robots::Robots::parse(robots.body.as_deref().unwrap_or_default()).sitemaps
+                {
+                    if let Ok(u) = origin.join(&raw)
+                        && u != *sitemap_url
+                        && !declared_urls.contains(&u)
+                        && declared_urls.len() < 5
+                    {
+                        declared_urls.push(u);
+                    }
+                }
+            }
+            let declared = join_all(
+                declared_urls
+                    .iter()
+                    .map(|u| fetch::probe_file(&probe, u, Xml)),
+            )
+            .await;
+
+            let summary = checks::pick_sitemap(&sitemap, &declared)
+                .filter(|sm| !checks::is_gz(sm))
+                .map(|sm| sitemap::summarize(sm.body.as_deref().unwrap_or_default()));
+            // sitemap 점검용 표본 (index 면 하위 sitemap 들)
+            let sitemap_sample_urls: Vec<String> = match &summary {
+                Some(s) if opts.sitemap_samples > 0 => {
+                    s.locs.iter().take(opts.sitemap_samples).cloned().collect()
+                }
+                _ => Vec::new(),
             };
-            let reused = &sitemap_detail.samples;
-            let pages = join_all(urls.into_iter().map(|raw| {
+            // 여러 페이지 표본: index 면 첫 하위 sitemap 의 URL 을 쓴다
+            let page_locs: Vec<String> = match &summary {
+                Some(s) if s.is_index && opts.page_samples > 0 => {
+                    match s.locs.first().and_then(|u| Url::parse(u).ok()) {
+                        Some(child) => {
+                            let p = fetch::probe_file(&probe, &child, Xml).await;
+                            if p.exists && !checks::is_gz(&p) {
+                                sitemap::summarize(p.body.as_deref().unwrap_or_default()).locs
+                            } else {
+                                Vec::new()
+                            }
+                        }
+                        None => Vec::new(),
+                    }
+                }
+                Some(s) => s.locs.clone(),
+                None => Vec::new(),
+            };
+            let (page_urls, from_sitemap, from_links) = if opts.page_samples > 0 {
+                pick_page_samples(
+                    &page_locs,
+                    &facts.extra.internal_link_urls,
+                    &base,
+                    opts.page_samples,
+                )
+            } else {
+                (Vec::new(), 0, 0)
+            };
+            // 두 표본의 합집합을 한 번에 요청
+            let mut all: Vec<String> = sitemap_sample_urls.clone();
+            for u in &page_urls {
+                if !all.contains(u) {
+                    all.push(u.clone());
+                }
+            }
+            let fetched: Vec<checks::SampleResult> = join_all(all.into_iter().map(|raw| {
                 let probe = &probe;
                 async move {
-                    if let Some((_, r)) = reused.iter().find(|(u, _)| *u == raw) {
-                        return (raw, r.clone());
-                    }
                     let result = match Url::parse(&raw) {
                         Ok(u) => fetch::probe_page(probe, &u).await,
                         Err(e) => Err(format!("invalid url: {e}")),
@@ -420,7 +368,44 @@ impl Checker {
                 }
             }))
             .await;
-            Some(checks::SiteSample { source, pages })
+            let pick = |urls: &[String]| -> Vec<checks::SampleResult> {
+                urls.iter()
+                    .filter_map(|u| fetched.iter().find(|(x, _)| x == u).cloned())
+                    .collect()
+            };
+            let samples = pick(&sitemap_sample_urls);
+            let site = (opts.page_samples > 0).then(|| checks::SiteSample {
+                source: match (from_sitemap > 0, from_links > 0) {
+                    (true, true) => "sitemap+internal_links",
+                    (true, false) => "sitemap",
+                    _ => "internal_links",
+                },
+                pages: pick(&page_urls),
+            });
+            (
+                sitemap,
+                robots,
+                checks::SitemapDetail { declared, samples },
+                site,
+            )
+        };
+
+        // ── 사이트 루트 파일 ──
+        let md_url = markdown_url(&base);
+        let files_fut = async {
+            tokio::join!(
+                fetch::probe_file(&probe, llms_url, PlainText),
+                fetch::probe_file(&probe, llms_full_url, PlainText),
+                fetch::probe_file(&probe, ai_url, PlainText),
+                fetch::probe_file(&probe, favicon_url, Binary),
+                fetch::probe_file(&probe, apple_url, Binary),
+                fetch::probe_file(&probe, security_url, PlainText),
+                fetch::probe_file(&probe, tdm_url, Json),
+                fetch::probe_file(&probe, aasa_url, Json),
+                fetch::probe_file(&probe, assetlinks_url, Json),
+                fetch::probe_file(&probe, ads_url, PlainText),
+                fetch::probe_file(&probe, &md_url, PlainText),
+            )
         };
 
         // B 그룹: TLS, URL 변형, og:image 파일, 내부 링크 표본, .md 버전
@@ -428,7 +413,12 @@ impl Checker {
             if !opts.check_transport {
                 return None;
             }
-            Some(fetch::tls_certificate(&opts.user_agent, opts.probe_timeout, &base).await)
+            // 대상 페이지를 받을 때 함께 얻은 인증서를 쓴다 (추가 요청 없음)
+            Some(match (base.scheme(), &page.certificate) {
+                ("https", Some(c)) => Ok(Some(c.clone())),
+                ("https", None) => Err("no peer certificate".to_string()),
+                _ => Ok(None),
+            })
         };
         let variants_fut = async {
             if !opts.check_transport {
@@ -488,8 +478,6 @@ impl Checker {
                 .await,
             )
         };
-        let md_url = markdown_url(&base);
-        let md_fut = fetch::probe_file(&probe, &md_url, PlainText);
         let manifest_fut = async {
             let raw = facts.manifest.as_deref().filter(|_| opts.check_links)?;
             let url = base.join(raw).ok()?;
@@ -530,25 +518,6 @@ impl Checker {
             let url = origin.join(path).ok()?;
             Some((url.to_string(), fetch::probe_headers(&probe, &url).await))
         };
-        let (
-            tls,
-            url_variants,
-            og_image,
-            internal_samples,
-            markdown_version,
-            manifest,
-            favicon_image,
-            static_asset,
-        ) = tokio::join!(
-            tls_fut,
-            variants_fut,
-            og_fut,
-            internal_fut,
-            md_fut,
-            manifest_fut,
-            favicon_fut,
-            asset_fut
-        );
         // canonical 대상 / hreflang 대상 / 외부 CSS / 페이지 무게
         let canonical_fut = async {
             let c = facts.canonical.as_deref().and_then(|c| base.join(c).ok())?;
@@ -655,8 +624,50 @@ impl Checker {
                 image_bytes: imgs.iter().flatten().sum(),
             })
         };
-        let (canonical_target, hreflang_targets, external_css, page_weight) =
-            tokio::join!(canonical_fut, hreflang_fut, css_fut, weight_fut);
+
+        // ── 모든 독립 작업을 한 번에 ──
+        let (
+            (sitemap, robots, sitemap_detail, site),
+            (
+                llms,
+                llms_full,
+                ai_txt,
+                favicon_ico,
+                apple_touch_icon,
+                security_txt,
+                tdmrep,
+                apple_app_site_association,
+                assetlinks,
+                ads_txt,
+                markdown_version,
+            ),
+            not_found,
+            links,
+            (http_version, encoding, redirect_chain, host_variant),
+            ai_ua,
+            (tls, url_variants, og_image, internal_samples),
+            (manifest, favicon_image, static_asset),
+            (canonical_target, hreflang_targets, external_css, page_weight),
+        ) = tokio::join!(
+            sitemap_chain,
+            files_fut,
+            fetch::probe_status_body(&probe, not_found_url),
+            links_fut,
+            transport_fut,
+            ai_fut,
+            async { tokio::join!(tls_fut, variants_fut, og_fut, internal_fut) },
+            async { tokio::join!(manifest_fut, favicon_fut, asset_fut) },
+            async { tokio::join!(canonical_fut, hreflang_fut, css_fut, weight_fut) },
+        );
+        let well_known = checks::WellKnown {
+            favicon_ico,
+            apple_touch_icon,
+            security_txt,
+            tdmrep,
+            apple_app_site_association,
+            assetlinks,
+            ads_txt,
+        };
 
         let extended = checks::Extended {
             canonical_target,

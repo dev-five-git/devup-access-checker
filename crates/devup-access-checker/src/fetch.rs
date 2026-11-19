@@ -12,7 +12,7 @@ use url::Url;
 use crate::Error;
 
 /// 같은 호스트에 동시에 보내는 요청 수 상한 (순간 폭주로 인한 차단·timeout 방지).
-const PER_HOST_CONCURRENCY: usize = 6;
+const PER_HOST_CONCURRENCY: usize = 8;
 
 static HOST_LIMITS: LazyLock<Mutex<HashMap<String, Arc<Semaphore>>>> =
     LazyLock::new(Default::default);
@@ -28,14 +28,32 @@ fn host_limit(url: &str) -> Arc<Semaphore> {
         .clone()
 }
 
-/// 호스트별 동시 요청 수를 제한하고, timeout·연결 실패는 한 번 재시도한다.
+/// `DEVUP_ACCESS_CHECKER_TRACE=1` 이면 요청마다 대기·소요 시간을 stderr 로 출력한다.
+static TRACE: LazyLock<bool> =
+    LazyLock::new(|| std::env::var_os("DEVUP_ACCESS_CHECKER_TRACE").is_some());
+
+/// 호스트별 동시 요청 수를 제한하고, 연결 실패는 한 번 재시도한다 (timeout 은 재시도하지 않음).
 async fn send(client: &Client, method: Method, url: &str) -> Result<Response, reqwest::Error> {
     let limit = host_limit(url);
+    let waited = Instant::now();
     let _permit = limit.acquire_owned().await.ok();
+    let started = Instant::now();
     let mut retried = false;
     loop {
-        match client.request(method.clone(), url).send().await {
-            Err(e) if !retried && (e.is_timeout() || e.is_connect()) => {
+        let result = client.request(method.clone(), url).send().await;
+        if *TRACE {
+            eprintln!(
+                "[devup-access-checker] {method} {url} wait={}ms took={}ms {}",
+                (started - waited).as_millis(),
+                started.elapsed().as_millis(),
+                match &result {
+                    Ok(r) => r.status().as_u16().to_string(),
+                    Err(e) => describe(e),
+                }
+            );
+        }
+        match result {
+            Err(e) if !retried && e.is_connect() && !e.is_timeout() => {
                 retried = true;
                 tokio::time::sleep(Duration::from_millis(300)).await;
             }
@@ -68,6 +86,21 @@ pub struct Page {
     pub body_bytes: usize,
     /// 협상된 HTTP 버전 (예: "HTTP/2.0")
     pub version: String,
+    /// 최종 연결의 TLS 서버 인증서 (https 일 때)
+    pub certificate: Option<CertInfo>,
+}
+
+/// 대상 페이지용 클라이언트: 인증서 확인을 위해 TLS 정보를 함께 받는다.
+pub fn build_page_client(user_agent: &str, timeout: Duration) -> Client {
+    Client::builder()
+        .user_agent(user_agent)
+        .timeout(timeout)
+        .redirect(Policy::limited(10))
+        .gzip(true)
+        .brotli(true)
+        .tls_info(true)
+        .build()
+        .expect("reqwest client build")
 }
 
 pub fn build_client(user_agent: &str, timeout: Duration) -> Client {
@@ -105,6 +138,11 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
     let final_url = res.url().clone();
     let headers = res.headers().clone();
     let version = format!("{:?}", res.version());
+    let certificate = res
+        .extensions()
+        .get::<reqwest::tls::TlsInfo>()
+        .and_then(|i| i.peer_certificate())
+        .and_then(parse_certificate);
     let body = res.text().await.map_err(|e| Error::Fetch {
         url: url.to_string(),
         reason: describe(&e),
@@ -117,6 +155,7 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
         body,
         elapsed: started.elapsed(),
         version,
+        certificate,
     })
 }
 
@@ -376,41 +415,16 @@ pub struct CertInfo {
     pub not_after_text: String,
 }
 
-/// 서버 인증서를 받아 만료일 등을 확인한다. http 대상이면 Ok(None).
-pub async fn tls_certificate(
-    ua: &str,
-    timeout: Duration,
-    url: &Url,
-) -> Result<Option<CertInfo>, String> {
-    if url.scheme() != "https" {
-        return Ok(None);
-    }
-    let client = Client::builder()
-        .user_agent(ua)
-        .timeout(timeout)
-        .tls_info(true)
-        .redirect(Policy::none())
-        .build()
-        .map_err(|e| e.to_string())?;
-    let res = send_get(&client, url.as_str())
-        .await
-        .map_err(|e| describe(&e))?;
-    let Some(der) = res
-        .extensions()
-        .get::<reqwest::tls::TlsInfo>()
-        .and_then(|i| i.peer_certificate())
-        .map(<[u8]>::to_vec)
-    else {
-        return Err("no peer certificate".into());
-    };
-    let (_, cert) = x509_parser::parse_x509_certificate(&der).map_err(|e| e.to_string())?;
+/// DER 인증서에서 주체·발급자·만료일을 읽는다.
+pub fn parse_certificate(der: &[u8]) -> Option<CertInfo> {
+    let (_, cert) = x509_parser::parse_x509_certificate(der).ok()?;
     let not_after = cert.validity().not_after;
-    Ok(Some(CertInfo {
+    Some(CertInfo {
         subject: cert.subject().to_string(),
         issuer: cert.issuer().to_string(),
         not_after: not_after.timestamp(),
         not_after_text: not_after.to_datetime().to_string(),
-    }))
+    })
 }
 
 /// 본문을 최대 `max` 바이트까지 받는다. (status, content-type, bytes, 잘림 여부)
