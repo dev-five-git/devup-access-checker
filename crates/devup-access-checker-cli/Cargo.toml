@@ -1,14 +1,21 @@
 [package]
 name = "devup-access-checker-cli"
-description = "CLI for devup-access-checker"
-version.workspace = true
+version = "0.0.0"
+description = "CLI that checks SEO, GEO and web accessibility signals of a URL"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords = ["seo", "geo", "accessibility", "cli", "audit"]
+categories = ["command-line-utilities", "web-programming"]
+readme = "../../README.md"
 
 [[bin]]
 name = "devup-access-checker"
 path = "src/main.rs"
+# 라이브러리와 이름이 같아 문서 출력이 충돌하므로 바이너리 문서는 만들지 않는다
+doc = false
 
 [dependencies]
 devup-access-checker.workspace = true

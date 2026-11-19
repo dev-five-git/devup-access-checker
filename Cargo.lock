@@ -483,7 +483,7 @@ dependencies = [
 
 [[package]]
 name = "devup-access-checker"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "futures",
  "imagesize",
@@ -501,7 +501,7 @@ dependencies = [
 
 [[package]]
 name = "devup-access-checker-cli"
-version = "0.1.0"
+version = "0.0.0"
 dependencies = [
  "clap",
  "devup-access-checker",

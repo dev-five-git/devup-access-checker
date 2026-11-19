@@ -1,0 +1,5 @@
+{
+  "ignore": ["**", "!crates/**"],
+  "baseBranch": "main",
+  "latestPackage": "crates/devup-access-checker/Cargo.toml"
+}

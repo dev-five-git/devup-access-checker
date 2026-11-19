@@ -4,12 +4,24 @@ URL 하나를 받아 SEO · GEO(생성형 검색) 구성 요소의 **존재 여�
 
 이 도구는 점수나 등급을 매기지 않습니다. 각 항목에는 고정된 `id`, 존재 여부(`presence`), 원시 값(`value`)만 담기며, 점수화는 결과를 받아 쓰는 쪽에서 합니다.
 
+## 설치
+
+```sh
+# CLI
+cargo install devup-access-checker-cli
+
+# 라이브러리
+cargo add devup-access-checker
+```
+
+CLI 바이너리는 [GitHub Releases](https://github.com/dev-five-git/devup-access-checker/releases)에서도 받을 수 있습니다(Linux x86_64·aarch64, macOS x86_64·aarch64, Windows x86_64).
+
 ## CLI
 
 ```sh
-cargo run -p devup-access-checker-cli -- devfive.kr                 # 텍스트 출력
-cargo run -p devup-access-checker-cli -- devfive.kr -f json         # JSON
-cargo run -p devup-access-checker-cli -- a.com b.com --only-missing
+devup-access-checker devfive.kr                 # 텍스트 출력
+devup-access-checker devfive.kr -f json         # JSON
+devup-access-checker a.com b.com --only-missing
 ```
 
 | 옵션 | 설명 |
@@ -53,6 +65,10 @@ if report.get("geo.llms_txt").map(|c| c.presence) == Some(Presence::Missing) { /
 | `not_applicable` | 전제가 없어 검사 대상 아님 (예: 링크가 없어서 접근 검증 불가) |
 
 `present`는 "좋다"는 뜻이 아니라 "있다"는 뜻입니다. 그래서 `indexing.meta_noindex`, `transport.mixed_content`, `content.img_alt_missing`처럼 부정적인 항목은 `present`가 곧 문제가 발견되었다는 의미입니다.
+
+## 배포
+
+[changepacks](https://github.com/changepacks/changepacks)로 배포합니다. 변경 사항과 함께 `.changepacks/` 에 changepack 로그를 추가해 main 에 머지하면 CI가 버전을 올리고 crates.io 에 배포한 뒤, CLI 바이너리를 GitHub Release 에 올립니다. 저장소 시크릿 `CARGO_REGISTRY_TOKEN`이 필요합니다.
 
 ## 점검 항목
 

@@ -1,0 +1,21 @@
+# GitHub Actions 와 Cargo 의존성을 주간으로 갱신한다. changepacks/action 은 main 을 따르므로 제외.
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Seoul"
+    open-pull-requests-limit: 5
+    ignore:
+      - dependency-name: "changepacks/action"
+  - package-ecosystem: "cargo"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+      time: "06:00"
+      timezone: "Asia/Seoul"
+    open-pull-requests-limit: 5

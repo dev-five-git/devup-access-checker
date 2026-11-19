@@ -1,0 +1,4 @@
+# actions-rust-lang/setup-rust-toolchain 이 이 파일을 읽는다. 항상 최신 stable 을 따른다.
+[toolchain]
+channel = "stable"
+components = ["rustfmt", "clippy"]

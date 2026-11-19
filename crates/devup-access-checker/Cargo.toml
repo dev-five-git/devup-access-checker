@@ -1,10 +1,15 @@
 [package]
 name = "devup-access-checker"
-description = "Collects SEO / GEO signals of a web page and reports what is present or missing"
-version.workspace = true
+version = "0.0.0"
+description = "Collects SEO, GEO and web accessibility signals of a web page and reports what is present or missing"
 edition.workspace = true
 license.workspace = true
 repository.workspace = true
+homepage.workspace = true
+documentation.workspace = true
+keywords = ["seo", "geo", "accessibility", "llms-txt", "audit"]
+categories = ["web-programming", "development-tools"]
+readme = "../../README.md"
 
 [dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli"] }
