@@ -71,6 +71,14 @@ if report.get("geo.llms_txt").map(|c| c.presence) == Some(Presence::Missing) { /
 
 `present`는 "좋다"는 뜻이 아니라 "있다"는 뜻입니다. 그래서 `indexing.meta_noindex`, `transport.mixed_content`, `content.img_alt_missing`처럼 부정적인 항목은 `present`가 곧 문제가 발견되었다는 의미입니다.
 
+## 테스트
+
+`cargo test --workspace`로 실행합니다. 모든 테스트는 로컬 mock 서버만 쓰고 외부 네트워크에 의존하지 않습니다. CI는 [cargo-tarpaulin](https://github.com/xd009642/tarpaulin)으로 라인 커버리지 100%를 확인하며, 미달이면 실패합니다.
+
+```sh
+cargo tarpaulin --workspace --engine llvm --fail-under 100
+```
+
 ## 지원 Rust 버전
 
 Rust 1.88 이상 (CI에서 확인).

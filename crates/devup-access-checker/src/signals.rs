@@ -366,4 +366,11 @@ mod tests {
         );
         assert_eq!(s, CertMarkSignals::default());
     }
+
+    #[test]
+    fn large_pages_are_not_scanned() {
+        let big = format!("{}cf-chl location.href = '/x'", "a".repeat(200_001));
+        assert_eq!(bot_challenge(&big), None);
+        assert_eq!(js_redirect(&big), None);
+    }
 }

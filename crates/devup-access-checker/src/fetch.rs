@@ -375,15 +375,12 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
     let mut res = res;
     let mut buf = Vec::new();
     let mut read = 0usize;
-    loop {
+    while read < COUNT_LIMIT {
         match res.chunk().await {
             Ok(Some(chunk)) => {
                 read += chunk.len();
                 if buf.len() <= max {
                     buf.extend_from_slice(&chunk);
-                }
-                if read >= COUNT_LIMIT {
-                    break;
                 }
             }
             Ok(None) => break,
@@ -782,26 +779,251 @@ mod tests {
 
     #[test]
     fn html_detection_skips_prolog_and_comments() {
+        assert!(looks_like_html("<!-- generated -->\n<!DOCTYPE html><html>"));
         assert!(looks_like_html(
-            "<!-- generated -->
-<!DOCTYPE html><html>"
-        ));
-        assert!(looks_like_html(
-            "<?xml version=\"1.0\"?>
-<!DOCTYPE html PUBLIC>"
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE html PUBLIC>"
         ));
         assert!(looks_like_html("  <head><meta charset=utf-8>"));
         assert!(looks_like_html("<meta name=x>"));
-        assert!(!looks_like_html(
-            "# Title
-
-> <head> 태그 설명"
-        ));
+        assert!(!looks_like_html("# Title\n\n> <head> 태그 설명"));
         assert!(!looks_like_html("<?xml version=\"1.0\"?><urlset>"));
-        assert!(!looks_like_html(
-            "User-agent: *
-Disallow: /"
-        ));
+        assert!(!looks_like_html("User-agent: *\nDisallow: /"));
         assert!(!looks_like_html("<headline>"));
+        // 닫히지 않은 주석·선언
+        assert!(!looks_like_html("<!-- open"));
+        assert!(!looks_like_html("<?xml open"));
+    }
+
+    // ===== 네트워크 경계 상황 =====
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client() -> Client {
+        build_client("test", Duration::from_secs(5))
+    }
+
+    async fn serve(p: &str, r: ResponseTemplate) -> (MockServer, Url) {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(r)
+            .mount(&s)
+            .await;
+        let url = Url::parse(&format!("{}{p}", s.uri())).unwrap();
+        (s, url)
+    }
+
+    /// Content-Length 보다 짧은 본문을 보내고 연결을 끊는 서버 (본문 읽기 오류 재현).
+    async fn cut_body_server() -> Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 1000\r\n\r\nshort")
+                    .await;
+            }
+        });
+        Url::parse(&format!("http://{addr}/robots.txt")).unwrap()
+    }
+
+    const CHALLENGE: &str =
+        "<!doctype html><html><head><title>Just a moment...</title></head></html>";
+
+    #[test]
+    fn idle_host_limits_are_evicted() {
+        for i in 0..300 {
+            host_limit(&format!("http://h{i}.example/"));
+        }
+        assert!(HOST_LIMITS.lock().unwrap().len() <= 257);
+    }
+
+    #[test]
+    fn decodes_bom_and_utf16_meta_as_utf8() {
+        let h = HeaderMap::new();
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice("한글".as_bytes());
+        assert_eq!(decode_body(&bom, &h), "한글");
+        // meta 로 UTF-16 을 선언해도 바이트는 UTF-8 로 해석한다
+        assert!(decode_body("<meta charset=utf-16>한글".as_bytes(), &h).contains("한글"));
+    }
+
+    #[test]
+    fn parses_certificate_fixture() {
+        let der = include_bytes!("../tests/fixtures/cert.der");
+        let c = parse_certificate(der).unwrap();
+        assert!(c.subject.contains("test.local"));
+        assert!(c.not_after > 0);
+        assert!(parse_certificate(b"not a cert").is_none());
+    }
+
+    #[tokio::test]
+    async fn describes_errors() {
+        // timeout
+        let (_s, url) = serve(
+            "/slow",
+            ResponseTemplate::new(200).set_delay(Duration::from_secs(3)),
+        )
+        .await;
+        let quick = build_client("t", Duration::from_millis(200));
+        let e = send_get(&quick, url.as_str()).await.unwrap_err();
+        assert_eq!(describe(&e), "timeout");
+        // 리다이렉트 반복
+        let (s, url) = serve(
+            "/loop",
+            ResponseTemplate::new(302).insert_header("location", "/loop"),
+        )
+        .await;
+        let e = send_get(
+            &build_page_client("t", Duration::from_secs(5)),
+            url.as_str(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(describe(&e), "too many redirects");
+        assert!(
+            redirect_chain("t", Duration::from_secs(5), &url, 3)
+                .await
+                .unwrap_err()
+                .contains("too many redirects")
+        );
+        drop(s);
+        // 그 외 (잘못된 URL)
+        let e = send_get(&client(), "not a url").await.unwrap_err();
+        assert!(!describe(&e).is_empty());
+    }
+
+    #[tokio::test]
+    async fn body_read_errors_and_truncation() {
+        let cut = cut_body_server().await;
+        assert!(fetch_page(&client(), &cut).await.is_err());
+        let p = probe_file(&client(), &cut, Expected::PlainText).await;
+        assert!(p.error.is_some());
+
+        // 대상 페이지 상한 초과
+        let big = "a".repeat(MAX_PAGE_BYTES + 10);
+        let (_s, url) = serve("/big", ResponseTemplate::new(200).set_body_string(big)).await;
+        let page = fetch_page(&client(), &url).await.unwrap();
+        assert!(page.truncated);
+        assert!(page.body_bytes >= MAX_PAGE_BYTES);
+
+        // 사이트 파일 상한 초과 → 실제 크기와 truncated
+        let text = "b".repeat(MAX_PROBE_BODY + 10);
+        let (_s, url) = serve(
+            "/llms.txt",
+            ResponseTemplate::new(200).set_body_string(text),
+        )
+        .await;
+        let p = probe_file(&client(), &url, Expected::PlainText).await;
+        assert!(p.truncated);
+        assert_eq!(p.size, Some(MAX_PROBE_BODY + 10));
+
+        // 404 본문 상한
+        let (_s, url) = serve(
+            "/404",
+            ResponseTemplate::new(404).set_body_string("c".repeat(70_000)),
+        )
+        .await;
+        let (status, body) = probe_status_body(&client(), &url).await.unwrap();
+        assert_eq!((status, body.len()), (404, 65_536));
+
+        // fetch_bytes / count_bytes 상한
+        let (_s, url) = serve(
+            "/bin",
+            ResponseTemplate::new(200).set_body_bytes(vec![1u8; 5000]),
+        )
+        .await;
+        let (_, _, bytes, truncated) = fetch_bytes(&client(), &url, 100).await.unwrap();
+        assert_eq!((bytes.len(), truncated), (100, true));
+        assert_eq!(count_bytes(&client(), &url, 100).await.unwrap(), 100);
+
+        // UA 요청은 앞 200KB 만 본다
+        let (_s, url) = serve(
+            "/",
+            ResponseTemplate::new(200).set_body_string("d".repeat(300_000)),
+        )
+        .await;
+        let (status, _, challenge) = probe_ua(&client(), &url).await.unwrap();
+        assert_eq!((status, challenge), (200, None));
+    }
+
+    #[tokio::test]
+    async fn challenge_pages_are_errors() {
+        let (_s, url) = serve(
+            "/robots.txt",
+            ResponseTemplate::new(200).set_body_string(CHALLENGE),
+        )
+        .await;
+        let p = probe_file(&client(), &url, Expected::PlainText).await;
+        assert!(p.error.unwrap().contains("Cloudflare"));
+        assert!(probe_status_body(&client(), &url).await.is_err());
+        assert!(probe_page(&client(), &url).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn link_probe_rejects_bad_targets() {
+        let base = Url::parse("https://a.com/").unwrap();
+        assert_eq!(
+            probe_link(&client(), "http://[", &base)
+                .await
+                .error
+                .as_deref(),
+            Some("invalid url")
+        );
+        assert!(
+            probe_link(&client(), "mailto:x@a.com", &base)
+                .await
+                .error
+                .unwrap()
+                .contains("non-http")
+        );
+    }
+
+    #[tokio::test]
+    async fn sitemap_locs_from_plain_gzip_and_html() {
+        use std::io::Write as _;
+        let xml = r#"<?xml version="1.0"?><urlset><url><loc>https://a.com/p</loc></url></urlset>"#;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(xml.as_bytes()).unwrap();
+        let (_s, url) = serve(
+            "/s.xml.gz",
+            ResponseTemplate::new(200).set_body_bytes(gz.finish().unwrap()),
+        )
+        .await;
+        assert_eq!(
+            fetch_sitemap_locs(&client(), &url).await.unwrap(),
+            ["https://a.com/p"]
+        );
+        let (_s, url) = serve("/s.xml", ResponseTemplate::new(200).set_body_string(xml)).await;
+        assert_eq!(fetch_sitemap_locs(&client(), &url).await.unwrap().len(), 1);
+        let (_s, url) = serve(
+            "/h.xml",
+            ResponseTemplate::new(200).set_body_string("<!doctype html><html>"),
+        )
+        .await;
+        assert!(fetch_sitemap_locs(&client(), &url).await.is_err());
+        let (_s, url) = serve("/n.xml", ResponseTemplate::new(404)).await;
+        assert_eq!(
+            fetch_sitemap_locs(&client(), &url).await.unwrap_err(),
+            "HTTP 404"
+        );
+        // gzip 헤더만 있고 내용이 깨짐
+        let (_s, url) = serve(
+            "/bad.xml.gz",
+            ResponseTemplate::new(200).set_body_bytes(vec![0x1f, 0x8b, 0, 1, 2]),
+        )
+        .await;
+        assert!(
+            fetch_sitemap_locs(&client(), &url)
+                .await
+                .unwrap_err()
+                .starts_with("gzip")
+        );
     }
 }

@@ -504,6 +504,7 @@ dependencies = [
  "futures",
  "serde_json",
  "tokio",
+ "wiremock",
 ]
 
 [[package]]

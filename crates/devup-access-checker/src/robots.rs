@@ -236,13 +236,8 @@ Sitemap: https://example.com/sitemap.xml # main
 
     #[test]
     fn matches_query_and_non_ascii_paths() {
-        let r = Robots::parse(
-            "User-agent: *
-Disallow: /*?sort=
-Disallow: /검색
-Disallow: /a%2fb
-",
-        );
+        let r =
+            Robots::parse("User-agent: *\nDisallow: /*?sort=\nDisallow: /검색\nDisallow: /a%2fb\n");
         assert!(!r.is_allowed("Googlebot", "/list?sort=price"));
         assert!(r.is_allowed("Googlebot", "/list?page=2"));
         // url 크레이트가 만든 경로(퍼센트 인코딩)와 원문 패턴이 맞아야 한다

@@ -1496,41 +1496,34 @@ pub fn build(i: &Inputs) -> Vec<Check> {
 }
 
 /// 카탈로그의 모든 id 를 카탈로그 순서로 담는다. 만들어지지 않은 항목(옵션으로 생략 등)은 unknown.
-pub fn fill_catalog(mut checks: Vec<Check>) -> Vec<Check> {
+pub fn fill_catalog(checks: Vec<Check>) -> Vec<Check> {
     use crate::catalog::{CATALOG, position};
-    debug_assert!(
-        checks.iter().all(|c| position(&c.id).is_some()),
-        "카탈로그에 없는 id: {:?}",
-        checks
-            .iter()
-            .filter(|c| position(&c.id).is_none())
-            .map(|c| &c.id)
-            .collect::<Vec<_>>()
-    );
-    for (id, category, label) in CATALOG {
-        if !checks.iter().any(|c| c.id == *id) {
-            checks.push(Check {
+    let mut slots: Vec<Option<Check>> = vec![None; CATALOG.len()];
+    for c in checks {
+        let pos = position(&c.id);
+        debug_assert!(pos.is_some(), "카탈로그에 없는 id: {}", c.id);
+        if let Some(pos) = pos {
+            slots[pos] = Some(c);
+        }
+    }
+    // 항목명·분류는 카탈로그가 기준이다
+    CATALOG
+        .iter()
+        .zip(slots)
+        .map(|((id, category, label), c)| {
+            let mut c = c.unwrap_or_else(|| Check {
                 id: (*id).to_string(),
                 category: *category,
-                label: (*label).to_string(),
+                label: String::new(),
                 presence: Presence::Unknown,
                 value: None,
                 note: Some("점검하지 않음 (옵션으로 생략했거나 수행 조건이 아님)".into()),
             });
-        }
-    }
-    // 항목명·분류는 카탈로그가 기준이다
-    for c in &mut checks {
-        if let Some(pos) = position(&c.id) {
-            let (_, category, label) = CATALOG[pos];
-            c.category = category;
-            if c.label != label {
-                c.label = label.to_string();
-            }
-        }
-    }
-    checks.sort_by_key(|c| position(&c.id).unwrap_or(usize::MAX));
-    checks
+            c.category = *category;
+            c.label = (*label).to_string();
+            c
+        })
+        .collect()
 }
 
 fn host_mismatch(
@@ -3302,5 +3295,406 @@ mod tests {
         assert_eq!(year_of(0), 1970);
         assert_eq!(year_of(1_798_675_200), 2026); // 2026-12-31
         assert_eq!(year_of(1_798_761_600), 2027); // 2027-01-01
+    }
+
+    // ===== build() 를 직접 호출하는 입력 픽스처 =====
+    use crate::fetch::{CertInfo, Page};
+    use std::time::Duration;
+
+    const HTML: &str = r#"<!doctype html><html lang="ko"><head>
+<title>제목</title>
+<link rel="icon" href="/favicon.ico"><link rel="canonical" href="/">
+<link rel="manifest" href="/m.json"><link rel="alternate" hreflang="en" href="https://a.com/en">
+<meta property="og:image" content="/og.png"><meta property="og:url" content="https://a.com/">
+<script src="http://insecure.example/x.js"></script>
+</head><body><h1>h</h1><a href="/about">about</a><img src="/a.png" alt="a"></body></html>"#;
+
+    fn page(url: &str, html: &str) -> Page {
+        let mut h = HeaderMap::new();
+        h.insert("x-robots-tag", "noindex".parse().unwrap());
+        Page {
+            status: 200,
+            final_url: Url::parse(url).unwrap(),
+            headers: h,
+            body: html.to_string(),
+            elapsed: Duration::from_millis(5),
+            body_bytes: html.len(),
+            truncated: true,
+            version: "HTTP/2.0".into(),
+            certificate: None,
+        }
+    }
+
+    fn failed(url: &str) -> FileProbe {
+        FileProbe {
+            url: url.into(),
+            error: Some("boom".into()),
+            ..Default::default()
+        }
+    }
+
+    fn found(url: &str, body: &str) -> FileProbe {
+        FileProbe {
+            url: url.into(),
+            status_code: Some(200),
+            exists: true,
+            format_valid: true,
+            body: Some(body.into()),
+            size: Some(body.len()),
+            ..Default::default()
+        }
+    }
+
+    fn sample_page(status: u16) -> SamplePage {
+        SamplePage {
+            status,
+            final_url: Url::parse("https://a.com/p").unwrap(),
+            noindex: false,
+            canonical: None,
+            title: Some("t".into()),
+            description: None,
+            lang: None,
+            h1_count: 1,
+            img_total: 0,
+            img_without_alt: 0,
+            body_text_len: 10,
+            hreflang: Vec::new(),
+        }
+    }
+
+    fn err<T>() -> Result<T, String> {
+        Err("boom".to_string())
+    }
+
+    fn u(s: &str) -> Url {
+        Url::parse(s).unwrap()
+    }
+
+    /// 모든 부속 요청이 실패한 상태.
+    struct Fx {
+        page: Page,
+        facts: PageFacts,
+        sitemap: FileProbe,
+        robots: FileProbe,
+        not_found: Result<(u16, String), String>,
+        http_version: Option<Result<(u16, Url), String>>,
+        content_encoding: Option<Result<Option<String>, String>>,
+        links: Option<LinkProbes>,
+        ai_ua: Vec<AiUaResult>,
+        well_known: WellKnown,
+        sitemap_detail: SitemapDetail,
+        site: Option<SiteSample>,
+        redirect_chain: Option<Result<Vec<Hop>, String>>,
+        host_variant: Option<HostVariant>,
+        extended: Extended,
+    }
+
+    impl Fx {
+        fn failing() -> Self {
+            let page = page("https://a.com/", HTML);
+            let facts = crate::html::extract(&page.body, &page.final_url);
+            Fx {
+                page,
+                facts,
+                sitemap: failed("https://a.com/sitemap.xml"),
+                robots: failed("https://a.com/robots.txt"),
+                not_found: err(),
+                http_version: Some(err()),
+                content_encoding: Some(err()),
+                links: Some(LinkProbes {
+                    // 링크는 있는데 검증 결과가 없음 / 상태도 오류도 없음
+                    favicon: None,
+                    canonical: Some(LinkProbe::default()),
+                    ..Default::default()
+                }),
+                ai_ua: vec![("gptbot", err())],
+                well_known: WellKnown {
+                    favicon_ico: failed("f"),
+                    apple_touch_icon: failed("a"),
+                    security_txt: failed("s"),
+                    tdmrep: failed("t"),
+                    apple_app_site_association: failed("aa"),
+                    assetlinks: failed("al"),
+                    ads_txt: failed("ads"),
+                },
+                sitemap_detail: SitemapDetail::default(),
+                site: Some(SiteSample {
+                    source: "internal_links",
+                    pages: vec![("https://a.com/x".into(), err())],
+                }),
+                redirect_chain: Some(err()),
+                host_variant: Some(HostVariant {
+                    url: u("https://www.a.com/"),
+                    result: err(),
+                }),
+                extended: Extended {
+                    tls: Some(err()),
+                    url_variants: vec![UrlVariant {
+                        kind: "uppercase",
+                        url: u("https://a.com/X"),
+                        result: err(),
+                    }],
+                    og_image: Some(err()),
+                    internal_samples: Some(vec![("https://a.com/about".into(), err())]),
+                    manifest: Some(err()),
+                    favicon_image: Some(err()),
+                    static_asset: Some(("https://a.com/a.css".into(), err())),
+                    hreflang_targets: vec![("en".into(), "https://a.com/en".into(), err())],
+                    ..Default::default()
+                },
+            }
+        }
+
+        fn run(&self) -> Vec<Check> {
+            build(&Inputs {
+                page: &self.page,
+                facts: &self.facts,
+                sitemap: &self.sitemap,
+                robots: &self.robots,
+                llms: &failed("l"),
+                llms_full: &failed("lf"),
+                ai_txt: &failed("ai"),
+                not_found: &self.not_found,
+                http_version: self.http_version.as_ref(),
+                content_encoding: self.content_encoding.as_ref(),
+                links: self.links.as_ref(),
+                ai_ua: &self.ai_ua,
+                well_known: &self.well_known,
+                sitemap_detail: &self.sitemap_detail,
+                site: self.site.as_ref(),
+                refresh_hops: &[],
+                blocked: None,
+                challenge: None,
+                redirect_chain: self.redirect_chain.as_ref(),
+                host_variant: self.host_variant.as_ref(),
+                extended: &self.extended,
+            })
+        }
+    }
+
+    fn get<'a>(checks: &'a [Check], id: &str) -> &'a Check {
+        checks
+            .iter()
+            .find(|c| c.id == id)
+            .unwrap_or_else(|| panic!("{id}"))
+    }
+
+    #[test]
+    fn failed_requests_are_unknown_not_missing() {
+        let c = Fx::failing().run();
+        for id in [
+            "crawling.robots_txt",
+            "crawling.robots_allows.googlebot",
+            "crawling.robots_blocks_resources",
+            "links.favicon",
+            "links.canonical",
+            "performance.compression",
+            "transport.http_to_https_redirect",
+            "transport.redirect",
+            "transport.temporary_redirect",
+            "geo.ua_access.gptbot",
+            "geo.tdm_reservation",
+            "not_found_page.returns_404",
+            "not_found_page.custom",
+            "open_graph.image_file",
+            "transport.tls_certificate",
+            "transport.url_variant.uppercase",
+            "meta.manifest_content",
+            "meta.manifest_icons_192_512",
+            "meta.favicon_size",
+            "performance.static_asset_cache",
+        ] {
+            assert_eq!(get(&c, id).presence, Presence::Unknown, "{id}");
+        }
+        assert_eq!(
+            get(&c, "transport.host_variant_duplicate").presence,
+            Presence::NotApplicable
+        );
+        // 실패한 표본은 '깨짐' 목록에 오류와 함께 남는다
+        assert!(
+            get(&c, "content.broken_internal_links")
+                .value
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("boom")
+        );
+        assert!(
+            get(&c, "site.failed_pages")
+                .value
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("boom")
+        );
+        assert!(
+            get(&c, "structured_data.hreflang_reciprocal")
+                .value
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("boom")
+        );
+        // 잘린 본문, 헤더 noindex, https 페이지의 http 리소스
+        assert!(get(&c, "performance.html_bytes").note.is_some());
+        assert_eq!(
+            get(&c, "indexing.header_noindex").presence,
+            Presence::Present
+        );
+        assert_eq!(
+            get(&c, "transport.mixed_content").presence,
+            Presence::Present
+        );
+    }
+
+    #[test]
+    fn successful_network_results() {
+        let mut fx = Fx::failing();
+        fx.robots = FileProbe {
+            status_code: Some(503),
+            ..failed("https://a.com/robots.txt")
+        };
+        fx.robots.error = None;
+        fx.not_found = Ok((200, "x".into()));
+        fx.host_variant = Some(HostVariant {
+            url: u("https://www.a.com/"),
+            result: Ok((503, u("https://www.a.com/"))),
+        });
+        fx.extended.tls = Some(Ok(Some(CertInfo {
+            subject: "CN=a.com".into(),
+            issuer: "CN=CA".into(),
+            not_after: 86_400 * 10,
+            not_after_text: "1970-01-11".into(),
+        })));
+        fx.extended.manifest = Some(Ok((200, None)));
+        let c = fx.run();
+        assert!(
+            get(&c, "crawling.robots_txt").note.is_some()
+                || get(&c, "crawling.robots_allows.googlebot").note.is_some()
+        );
+        assert_eq!(
+            get(&c, "crawling.robots_allows.googlebot").presence,
+            Presence::Unknown
+        );
+        assert_eq!(
+            get(&c, "not_found_page.custom").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "transport.host_variant_duplicate").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "transport.tls_certificate").presence,
+            Presence::Present
+        );
+        assert_eq!(
+            get(&c, "meta.manifest_icons_192_512").presence,
+            Presence::NotApplicable
+        );
+
+        fx.host_variant = Some(HostVariant {
+            url: u("https://www.a.com/"),
+            result: Ok((200, u("https://www.a.com/"))),
+        });
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "transport.host_variant_duplicate").presence,
+            Presence::Present
+        );
+    }
+
+    #[test]
+    fn declared_sitemaps_and_sitemap_shapes() {
+        let mut fx = Fx::failing();
+        let index = r#"<?xml version="1.0"?><sitemapindex><sitemap><loc>https://a.com/s1.xml</loc></sitemap></sitemapindex>"#;
+        fx.robots = found(
+            "https://a.com/robots.txt",
+            "User-agent: *\nAllow: /\nSitemap: https://a.com/sitemap.xml\n",
+        );
+        fx.sitemap = found("https://a.com/sitemap.xml", index);
+        fx.sitemap_detail.samples = vec![("https://a.com/p".into(), Ok(sample_page(200)))];
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "crawling.robots_declared_sitemaps").presence,
+            Presence::Present
+        );
+        assert!(
+            get(&c, "crawling.sitemap_broken_urls")
+                .note
+                .as_deref()
+                .unwrap()
+                .contains("index")
+        );
+
+        // 선언했지만 요청 상한으로 확인하지 못한 sitemap
+        fx.robots = found(
+            "https://a.com/robots.txt",
+            "Sitemap: https://a.com/sitemap.xml\nSitemap: https://a.com/other.xml\n",
+        );
+        let c = fx.run();
+        let d = get(&c, "crawling.robots_declared_sitemaps");
+        assert_eq!(d.presence, Presence::Unknown);
+        assert!(
+            d.value
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("\"checked\":false")
+        );
+
+        // 빈 sitemap 과 gzip sitemap
+        fx.sitemap = found(
+            "https://a.com/sitemap.xml",
+            "<?xml version=\"1.0\"?><urlset></urlset>",
+        );
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "crawling.sitemap_lastmod").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "crawling.sitemap_foreign_host").presence,
+            Presence::NotApplicable
+        );
+        fx.sitemap = found("https://a.com/sitemap.xml.gz", "");
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "crawling.sitemap_entries").presence,
+            Presence::Unknown
+        );
+    }
+
+    #[test]
+    fn cert_mark_signal_combinations() {
+        let run = |s: CertMarkSignals, len: usize| {
+            let mut o = Out(Vec::new());
+            cert_mark_check(&mut o, &s, len);
+            o.0.remove(0)
+        };
+        let issuer = CertMarkSignals {
+            issuer: Some("한국웹접근성인증평가원"),
+            ..Default::default()
+        };
+        assert_eq!(run(issuer, 9_999).presence, Presence::Present);
+        let both = CertMarkSignals {
+            text_signal: true,
+            filename_signal: true,
+            ..Default::default()
+        };
+        assert_eq!(run(both, 9_999).presence, Presence::Present);
+        let one = CertMarkSignals {
+            text_signal: true,
+            ..Default::default()
+        };
+        assert_eq!(run(one, 9_999).presence, Presence::Unknown);
+        assert_eq!(
+            run(CertMarkSignals::default(), 9_999).presence,
+            Presence::Missing
+        );
+        assert_eq!(
+            run(CertMarkSignals::default(), 0).presence,
+            Presence::Unknown
+        );
     }
 }

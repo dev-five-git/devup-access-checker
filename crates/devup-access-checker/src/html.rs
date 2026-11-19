@@ -473,4 +473,58 @@ mod tests {
         let f = extract("<html><head></head></html>", &page);
         assert_eq!(f.link_base(&page), &page);
     }
+
+    /// 자주 나오지 않는 마크업 형태들을 한 문서에 모아 추출 결과를 확인한다.
+    #[test]
+    fn extracts_less_common_markup() {
+        let long_alt = "가".repeat(130);
+        let html = format!(
+            r#"<html><head>
+<meta http-equiv="Content-Type" content="text/html; charset=EUC-KR">
+<link rel="icon" href="">
+<link rel="apple-touch-icon" href="/apple.png">
+<link rel="preload" as="script" href="/x.js">
+<script type="text/javascript">var x = 1;</script>
+<script type="application/ld+json">{{"@type":"Article","sameAs":"https://x.com/a","name":null,"wordCount":5,
+  "datePublished":["2024-01-01"],"dateModified":5,"x":{{"dateModified":"2024-02-02"}}}}</script>
+<style>a:focus-visible {{ outline: 2px solid; }}</style>
+</head><body>
+<input type="button" value="보내기"><input type="button">
+<img src="/a.tiff" alt="{long_alt}">
+<a name="anchor-only" href=" ">x</a>
+</body></html>"#
+        );
+        let f = extract(&html, &base());
+        assert_eq!(f.charset.as_deref(), Some("euc-kr"));
+        assert_eq!(f.favicon, None, "빈 href 는 무시");
+        assert_eq!(f.apple_touch_icon.as_deref(), Some("/apple.png"));
+        assert_eq!(f.font_preloads, 0);
+        assert_eq!(f.json_ld.same_as, vec!["https://x.com/a".to_string()]);
+        assert_eq!(f.a11y.buttons, 2);
+        assert_eq!(f.a11y.unnamed_buttons, 1);
+        assert_eq!(f.a11y.long_alts, 1);
+        assert!(
+            f.extra.image_formats.is_empty(),
+            "알 수 없는 확장자는 집계하지 않음"
+        );
+        let article = &f.extra.ld_objects[0];
+        assert!(
+            !article.keys.contains(&"name".to_string()),
+            "null 값은 빈 값"
+        );
+        assert!(article.keys.contains(&"wordCount".to_string()));
+        assert_eq!(f.extra.published.as_deref(), Some("2024-01-01"));
+        assert_eq!(f.extra.modified.as_deref(), Some("2024-02-02"));
+        assert!(f.extra.inline_css.has_focus_visible);
+    }
+
+    /// frameset 문서에는 body 가 없다.
+    #[test]
+    fn frameset_document_has_no_body_text() {
+        let f = extract(
+            r#"<html><head><title>t</title></head><frameset><frame src="a.html"></frameset></html>"#,
+            &base(),
+        );
+        assert_eq!(f.body_text_len, 0);
+    }
 }

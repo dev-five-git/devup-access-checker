@@ -135,3 +135,33 @@ impl Report {
             .filter(|c| c.presence == Presence::Missing)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_lookup_and_missing() {
+        let check = |id: &str, presence| Check {
+            id: id.into(),
+            category: Category::Meta,
+            label: id.into(),
+            presence,
+            value: None,
+            note: None,
+        };
+        let r = Report {
+            url: "u".into(),
+            final_url: "u".into(),
+            status_code: 200,
+            duration_ms: 1,
+            blocked: None,
+            checks: vec![check("a", Presence::Present), check("b", Presence::Missing)],
+        };
+        assert_eq!(r.get("a").map(|c| c.presence), Some(Presence::Present));
+        assert_eq!(
+            r.missing().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["b"]
+        );
+    }
+}

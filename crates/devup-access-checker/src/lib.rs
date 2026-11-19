@@ -219,10 +219,9 @@ impl Checker {
                 return (None, None, None, None);
             }
             let mut http_url = base.clone();
+            // 대상은 항상 http(s) 이므로 스킴 변경은 실패하지 않는다
+            let _ = http_url.set_scheme("http");
             let http_fut = async {
-                if http_url.set_scheme("http").is_err() {
-                    return Err("cannot build http url".to_string());
-                }
                 // 80 포트를 막아 둔 사이트가 많아 짧게 본다
                 let quick = fetch::build_client(
                     &opts.user_agent,
@@ -233,11 +232,7 @@ impl Checker {
             let enc_fut = probe_encoding(&opts.user_agent, opts.probe_timeout, &base);
             let chain_fut =
                 fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, &target, 10);
-            let variant_fut = async {
-                let url = host_variant(&base)?;
-                let result = fetch::probe_status(&probe, &url).await;
-                Some(checks::HostVariant { url, result })
-            };
+            let variant_fut = probe_host_variant(&probe, host_variant(&base));
             let (h, e, c, v) = tokio::join!(http_fut, enc_fut, chain_fut, variant_fut);
             (Some(h), Some(e), Some(c), v)
         };
@@ -421,11 +416,7 @@ impl Checker {
                 return None;
             }
             // 대상 페이지를 받을 때 함께 얻은 인증서를 쓴다 (추가 요청 없음)
-            Some(match (base.scheme(), &page.certificate) {
-                ("https", Some(c)) => Ok(Some(c.clone())),
-                ("https", None) => Err("no peer certificate".to_string()),
-                _ => Ok(None),
-            })
+            Some(tls_result(base.scheme(), page.certificate.as_ref()))
         };
         let variants_fut = async {
             if !opts.check_transport {
@@ -464,23 +455,18 @@ impl Checker {
             if !opts.check_links || opts.internal_link_samples == 0 {
                 return None;
             }
-            let urls: Vec<String> = facts
+            // 내부 링크 URL 은 이미 절대 URL 로 정규화되어 있다
+            let urls: Vec<Url> = facts
                 .extra
                 .internal_link_urls
                 .iter()
                 .take(opts.internal_link_samples)
-                .cloned()
+                .filter_map(|raw| Url::parse(raw).ok())
                 .collect();
             Some(
-                join_all(urls.into_iter().map(|raw| {
+                join_all(urls.into_iter().map(|u| {
                     let probe = &probe;
-                    async move {
-                        let result = match Url::parse(&raw) {
-                            Ok(u) => fetch::probe_status(probe, &u).await,
-                            Err(e) => Err(format!("invalid url: {e}")),
-                        };
-                        (raw, result)
-                    }
+                    async move { (u.to_string(), fetch::probe_status(probe, &u).await) }
                 }))
                 .await,
             )
@@ -739,6 +725,28 @@ impl Checker {
     }
 }
 
+/// www 변형 호스트를 요청해 본다. 변형이 없으면(IP·단일 레이블 호스트) None.
+async fn probe_host_variant(
+    probe: &reqwest::Client,
+    url: Option<Url>,
+) -> Option<checks::HostVariant> {
+    let url = url?;
+    let result = fetch::probe_status(probe, &url).await;
+    Some(checks::HostVariant { url, result })
+}
+
+/// 대상 페이지 연결에서 얻은 인증서로 TLS 항목 입력을 만든다.
+fn tls_result(
+    scheme: &str,
+    cert: Option<&fetch::CertInfo>,
+) -> Result<Option<fetch::CertInfo>, String> {
+    match (scheme, cert) {
+        ("https", Some(c)) => Ok(Some(c.clone())),
+        ("https", None) => Err("no peer certificate".to_string()),
+        _ => Ok(None),
+    }
+}
+
 /// 분석할 표본을 고른다. 페이지가 순서를 바꿔 내려줘도 같은 결과가 나오도록 정렬·중복 제거 후 앞에서 `n` 개.
 fn sample(urls: &[String], n: usize) -> Vec<&String> {
     let mut v: Vec<&String> = urls.iter().collect();
@@ -971,5 +979,37 @@ mod tests {
         let b: Vec<String> = ["b", "a", "c"].map(String::from).to_vec();
         assert_eq!(sample(&a, 2), sample(&b, 2));
         assert_eq!(sample(&a, 10).len(), 3);
+    }
+
+    #[test]
+    fn tls_result_by_scheme_and_certificate() {
+        let cert = fetch::CertInfo {
+            subject: "s".into(),
+            issuer: "i".into(),
+            not_after: 1,
+            not_after_text: "t".into(),
+        };
+        assert!(tls_result("https", Some(&cert)).unwrap().is_some());
+        assert!(tls_result("https", None).is_err());
+        assert!(tls_result("http", None).unwrap().is_none());
+    }
+
+    #[tokio::test]
+    async fn host_variant_probe_runs_only_with_variant() {
+        let client = fetch::build_client("t", Duration::from_secs(5));
+        assert!(probe_host_variant(&client, None).await.is_none());
+        // 닫힌 포트: 결과는 오류지만 변형은 기록된다
+        let url = Url::parse("http://127.0.0.1:9/").unwrap();
+        let v = probe_host_variant(&client, Some(url)).await.unwrap();
+        assert!(v.result.is_err());
+    }
+
+    #[test]
+    fn page_samples_stop_at_limit() {
+        let base = Url::parse("https://a.com/").unwrap();
+        let locs: Vec<String> = (0..5).map(|i| format!("https://a.com/s{i}")).collect();
+        let links: Vec<String> = (0..5).map(|i| format!("https://a.com/l{i}")).collect();
+        let (urls, s, l) = pick_page_samples(&locs, &links, &base, 2);
+        assert_eq!((urls.len(), s, l), (2, 2, 0));
     }
 }

@@ -24,3 +24,6 @@ clap = { version = "4.6", features = ["derive"] }
 tokio.workspace = true
 serde_json.workspace = true
 futures = "0.3"
+
+[dev-dependencies]
+wiremock = "0.6"

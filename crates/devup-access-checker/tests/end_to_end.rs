@@ -1093,3 +1093,150 @@ async fn labels_match_catalog() {
         }
     }
 }
+
+fn html_page(body: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/html")
+        .set_body_string(body)
+}
+
+fn quick() -> Options {
+    Options {
+        check_transport: false,
+        check_ai_user_agents: false,
+        check_resources: false,
+        ..Default::default()
+    }
+}
+
+/// meta refresh 를 따라가지 않거나 중단하는 경우들.
+#[tokio::test]
+async fn client_redirect_edge_cases() {
+    let s = MockServer::start().await;
+    let long_text = "본문 ".repeat(150);
+    for (p, body) in [
+        // 지연이 길고 본문도 있어 리다이렉트로 보지 않음
+        ("/slow", format!(r#"<html><head><meta http-equiv="refresh" content="30; url=/x"></head><body>{long_text}</body></html>"#)),
+        // 해석할 수 없는 대상
+        ("/bad", r#"<html><head><meta http-equiv="refresh" content="0; url=http://["></head><body></body></html>"#.to_string()),
+        // 자기 자신
+        ("/self", r#"<html><head><meta http-equiv="refresh" content="0; url=/self"></head><body></body></html>"#.to_string()),
+        // 대상 요청 실패
+        ("/dead", r#"<html><head><meta http-equiv="refresh" content="0; url=http://127.0.0.1:9/"></head><body></body></html>"#.to_string()),
+    ] {
+        Mock::given(method("GET")).and(path(p)).respond_with(html_page(&body)).mount(&s).await;
+    }
+    for p in ["/slow", "/bad", "/self", "/dead"] {
+        let r = Checker::new(quick())
+            .check(&format!("{}{p}", s.uri()))
+            .await
+            .unwrap();
+        assert_eq!(
+            presence(&r, "transport.meta_refresh_redirect"),
+            Presence::Missing,
+            "{p}"
+        );
+    }
+}
+
+/// sitemap index: gzip 하위 sitemap 은 풀어서 표본을 얻고, 읽지 못하면 이유를 남긴다.
+#[tokio::test]
+async fn sitemap_index_children() {
+    use std::io::Write as _;
+    let s = MockServer::start().await;
+    let index = |child: &str| {
+        format!(
+            r#"<?xml version="1.0"?><sitemapindex><sitemap><loc>{child}</loc></sitemap></sitemapindex>"#
+        )
+    };
+    let child = format!(
+        r#"<?xml version="1.0"?><urlset><url><loc>{}/p</loc></url></urlset>"#,
+        s.uri()
+    );
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(child.as_bytes()).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(html_page(PAGE))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/p"))
+        .respond_with(html_page(PAGE))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/c.xml.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(gz.finish().unwrap()))
+        .mount(&s)
+        .await;
+    let sitemap = Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(index(&format!("{}/c.xml.gz", s.uri()))),
+        )
+        .mount_as_scoped(&s)
+        .await;
+    let r = Checker::new(quick()).check(&s.uri()).await.unwrap();
+    assert_eq!(
+        presence(&r, "crawling.sitemap_broken_urls"),
+        Presence::Missing
+    );
+    drop(sitemap);
+
+    // 하위 sitemap 이 없음 → 이유가 노트에 남는다
+    let missing = Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(index(&format!("{}/none.xml", s.uri()))),
+        )
+        .mount_as_scoped(&s)
+        .await;
+    let r = Checker::new(quick()).check(&s.uri()).await.unwrap();
+    let c = r.get("crawling.sitemap_broken_urls").unwrap();
+    assert_eq!(c.presence, Presence::Unknown);
+    assert!(c.note.as_deref().unwrap().contains("읽기 실패"));
+    drop(missing);
+
+    // 하위 sitemap 이 하나도 없는 index
+    Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(r#"<?xml version="1.0"?><sitemapindex></sitemapindex>"#),
+        )
+        .mount(&s)
+        .await;
+    let r = Checker::new(quick()).check(&s.uri()).await.unwrap();
+    assert_eq!(
+        presence(&r, "crawling.sitemap_broken_urls"),
+        Presence::Unknown
+    );
+}
+
+/// 해석할 수 없는 og:image 주소는 요청하지 않고 판별 불가.
+#[tokio::test]
+async fn invalid_og_image_url() {
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(html_page(
+            r#"<html><head><meta property="og:image" content="http://["></head><body></body></html>"#,
+        ))
+        .mount(&s)
+        .await;
+    let r = Checker::new(Options {
+        check_transport: false,
+        check_ai_user_agents: false,
+        ..Default::default()
+    })
+    .check(&s.uri())
+    .await
+    .unwrap();
+    assert_eq!(presence(&r, "open_graph.image_file"), Presence::Unknown);
+}
