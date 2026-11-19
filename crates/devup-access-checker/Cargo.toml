@@ -1,0 +1,24 @@
+[package]
+name = "devup-access-checker"
+description = "Collects SEO / GEO signals of a web page and reports what is present or missing"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli"] }
+x509-parser = "0.18"
+imagesize = "0.14"
+scraper = "0.24"
+regex = "1"
+url = "2"
+serde.workspace = true
+serde_json.workspace = true
+thiserror = "2"
+tokio.workspace = true
+futures = "0.3"
+
+[dev-dependencies]
+wiremock = "0.6"
+tokio.workspace = true

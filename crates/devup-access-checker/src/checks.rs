@@ -1,0 +1,3164 @@
+//! 수집한 사실(fact) → `Check` 목록 변환. 네트워크 접근 없음, 점수·판정 없음.
+
+use reqwest::header::HeaderMap;
+use serde_json::{Value, json};
+use url::Url;
+
+use crate::fetch::{CertInfo, FileProbe, Hop, LinkProbe, Page, SamplePage};
+use crate::html::PageFacts;
+use crate::model::{Category, Check, Presence};
+use crate::robots::Robots;
+use crate::signals::{self, CertMarkSignals};
+use crate::{a11y, extra, llms, sitemap};
+
+/// body 텍스트가 이보다 짧으면 CSR 셸로 보고 마크 "없음" 을 단정하지 않는다.
+pub const CSR_SHELL_TEXT_LEN: usize = 500;
+
+/// 검색엔진 크롤러 (robots.txt 허용 여부 점검 대상): (id 접미사, product token, 표시명)
+pub const SEARCH_CRAWLERS: &[(&str, &str, &str)] = &[
+    ("googlebot", "Googlebot", "Google"),
+    ("bingbot", "Bingbot", "Bing"),
+    ("yeti", "Yeti", "Naver"),
+    ("daumoa", "Daumoa", "Daum"),
+];
+
+/// 생성형 AI 크롤러 (robots.txt 허용 여부 점검 대상).
+pub const AI_CRAWLERS: &[(&str, &str, &str)] = &[
+    ("gptbot", "GPTBot", "OpenAI 학습"),
+    ("oai_searchbot", "OAI-SearchBot", "ChatGPT 검색"),
+    ("chatgpt_user", "ChatGPT-User", "ChatGPT 사용자 요청"),
+    ("claudebot", "ClaudeBot", "Anthropic 학습"),
+    ("claude_searchbot", "Claude-SearchBot", "Claude 검색"),
+    ("claude_user", "Claude-User", "Claude 사용자 요청"),
+    ("perplexitybot", "PerplexityBot", "Perplexity 검색"),
+    (
+        "perplexity_user",
+        "Perplexity-User",
+        "Perplexity 사용자 요청",
+    ),
+    ("google_extended", "Google-Extended", "Gemini 학습"),
+    ("applebot_extended", "Applebot-Extended", "Apple AI 학습"),
+    ("meta_externalagent", "meta-externalagent", "Meta AI"),
+    ("amazonbot", "Amazonbot", "Amazon"),
+    ("bytespider", "Bytespider", "ByteDance"),
+    ("ccbot", "CCBot", "Common Crawl"),
+];
+
+/// 실제 User-Agent 로 페이지를 요청해 볼 AI 크롤러: (id 접미사, UA 문자열)
+pub const AI_USER_AGENTS: &[(&str, &str)] = &[
+    (
+        "gptbot",
+        "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; GPTBot/1.2; +https://openai.com/gptbot",
+    ),
+    (
+        "claudebot",
+        "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; ClaudeBot/1.0; +claudebot@anthropic.com)",
+    ),
+    (
+        "perplexitybot",
+        "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko; compatible; PerplexityBot/1.0; +https://perplexity.ai/perplexitybot)",
+    ),
+];
+
+#[derive(Debug, Default)]
+pub struct LinkProbes {
+    pub favicon: Option<LinkProbe>,
+    pub apple_touch_icon: Option<LinkProbe>,
+    pub canonical: Option<LinkProbe>,
+    pub og_image: Option<LinkProbe>,
+    pub twitter_image: Option<LinkProbe>,
+    pub manifest: Option<LinkProbe>,
+    pub feed: Option<LinkProbe>,
+}
+
+/// www <-> non-www 대체 호스트 요청 결과.
+#[derive(Debug)]
+pub struct HostVariant {
+    pub url: Url,
+    pub result: Result<(u16, Url), String>,
+}
+
+/// 사이트 루트의 관례적 파일 probe 결과.
+#[derive(Debug)]
+pub struct WellKnown {
+    pub favicon_ico: FileProbe,
+    pub apple_touch_icon: FileProbe,
+    pub security_txt: FileProbe,
+    pub tdmrep: FileProbe,
+    pub apple_app_site_association: FileProbe,
+    pub assetlinks: FileProbe,
+    pub ads_txt: FileProbe,
+}
+
+/// robots 선언 sitemap 과 sitemap 안 URL 샘플 요청 결과.
+#[derive(Debug, Default)]
+pub struct SitemapDetail {
+    /// robots.txt `Sitemap:` 에 선언된 sitemap probe (기본 경로와 같은 URL 제외)
+    pub declared: Vec<FileProbe>,
+    /// 샘플 URL 요청 결과
+    pub samples: Vec<SampleResult>,
+}
+
+/// (sitemap 의 URL, 해당 URL 요청 결과)
+pub type SampleResult = (String, Result<SamplePage, String>);
+
+/// (hreflang, URL, 해당 페이지 요청 결과)
+pub type HreflangTarget = (String, String, Result<SamplePage, String>);
+
+/// 외부 스타일시트 분석 결과.
+#[derive(Debug, Clone, Default)]
+pub struct ExternalCss {
+    pub total: usize,
+    pub checked: usize,
+    pub failed: usize,
+    /// 받은 CSS 바이트 합 (압축 해제 기준)
+    pub bytes: usize,
+    pub facts: crate::css::CssFacts,
+}
+
+/// 페이지 리소스 무게 (압축 해제 기준, 표본 상한 있음).
+#[derive(Debug, Clone, Default)]
+pub struct PageWeight {
+    pub js_total: usize,
+    pub js_checked: usize,
+    pub js_bytes: usize,
+    pub images_total: usize,
+    pub images_checked: usize,
+    /// Content-Length 를 알 수 없었던 이미지 수
+    pub images_unknown: usize,
+    pub image_bytes: u64,
+}
+
+/// 클라이언트 측 리다이렉트 한 단계 (meta refresh / JavaScript).
+#[derive(Debug, Clone)]
+pub struct ClientRedirect {
+    /// `meta_refresh` 또는 `javascript`
+    pub kind: &'static str,
+    pub from: String,
+    pub to: String,
+    /// meta refresh 지연 초
+    pub delay: Option<f64>,
+}
+
+/// 여러 페이지 표본 크롤링 결과.
+#[derive(Debug, Default)]
+pub struct SiteSample {
+    /// 후보 URL 출처: `sitemap`, `internal_links`, `sitemap+internal_links`
+    pub source: &'static str,
+    pub pages: Vec<SampleResult>,
+}
+
+/// (정적 리소스 URL, 상태 코드와 응답 헤더)
+pub type AssetHeaders = (String, Result<(u16, HeaderMap), String>);
+
+/// (URL, 상태 코드와 최종 URL)
+pub type StatusSample = (String, Result<(u16, Url), String>);
+
+/// URL 변형(끝 슬래시, 대문자, index.html) 요청 결과.
+#[derive(Debug)]
+pub struct UrlVariant {
+    /// `trailing_slash` / `uppercase` / `index_html`
+    pub kind: &'static str,
+    pub url: Url,
+    pub result: Result<(u16, Url), String>,
+}
+
+/// og:image 실제 파일 정보.
+#[derive(Debug, Clone)]
+pub struct ImageInfo {
+    pub url: String,
+    pub status: u16,
+    pub content_type: Option<String>,
+    /// 받은 바이트 수 (잘렸으면 상한값)
+    pub bytes: usize,
+    pub truncated: bool,
+    pub width: Option<usize>,
+    pub height: Option<usize>,
+}
+
+/// 네트워크로 추가 수집한 B 그룹 사실.
+#[derive(Debug, Default)]
+pub struct Extended {
+    /// None = 수행 안 함
+    pub tls: Option<Result<Option<CertInfo>, String>>,
+    pub url_variants: Vec<UrlVariant>,
+    /// None = og:image 없음 또는 수행 안 함
+    pub og_image: Option<Result<ImageInfo, String>>,
+    /// 내부 링크 표본. None = 수행 안 함
+    pub internal_samples: Option<Vec<StatusSample>>,
+    pub markdown_version: Option<FileProbe>,
+    /// 인증서 남은 일수 계산 기준 (UNIX 초)
+    pub now: i64,
+    /// manifest 응답 (상태 코드, JSON). None = manifest 링크 없음 또는 수행 안 함
+    pub manifest: Option<Result<(u16, Option<Value>), String>>,
+    /// favicon 이미지 크기. None = 수행 안 함
+    pub favicon_image: Option<Result<ImageInfo, String>>,
+    /// 정적 리소스 표본 (URL, 상태, 헤더). None = 같은 호스트 리소스 없음 또는 수행 안 함
+    pub static_asset: Option<AssetHeaders>,
+    /// canonical 대상 페이지 (자기 참조가 아닐 때만). None = 해당 없음
+    pub canonical_target: Option<Result<SamplePage, String>>,
+    /// hreflang 대상 페이지 (자기 자신 제외)
+    pub hreflang_targets: Vec<HreflangTarget>,
+    /// None = 수행 안 함
+    pub external_css: Option<ExternalCss>,
+    /// None = 수행 안 함
+    pub page_weight: Option<PageWeight>,
+}
+
+/// 기본 경로 또는 robots 선언 중 처음 존재하는 sitemap.
+pub fn pick_sitemap<'a>(
+    default: &'a FileProbe,
+    declared: &'a [FileProbe],
+) -> Option<&'a FileProbe> {
+    std::iter::once(default).chain(declared).find(|p| p.exists)
+}
+
+pub fn is_gz(p: &FileProbe) -> bool {
+    p.url.ends_with(".gz")
+}
+
+/// 체크 생성에 필요한 모든 입력.
+pub struct Inputs<'a> {
+    pub page: &'a Page,
+    pub facts: &'a PageFacts,
+    pub sitemap: &'a FileProbe,
+    pub robots: &'a FileProbe,
+    pub llms: &'a FileProbe,
+    pub llms_full: &'a FileProbe,
+    pub ai_txt: &'a FileProbe,
+    pub not_found: &'a Result<(u16, String), String>,
+    /// http:// 버전 요청 결과. None = 수행 안 함
+    pub http_version: Option<&'a Result<(u16, Url), String>>,
+    /// 압축 없이 받은 응답의 Content-Encoding. None = 수행 안 함
+    pub content_encoding: Option<&'a Result<Option<String>, String>>,
+    /// None = 링크 검증 생략
+    pub links: Option<&'a LinkProbes>,
+    /// AI UA 요청 결과. 빈 목록 = 생략
+    pub ai_ua: &'a [AiUaResult],
+    pub well_known: &'a WellKnown,
+    pub sitemap_detail: &'a SitemapDetail,
+    /// None = 수행 안 함
+    pub site: Option<&'a SiteSample>,
+    /// 따라간 meta refresh (출발 URL, 도착 URL, 지연 초)
+    pub refresh_hops: &'a [ClientRedirect],
+    /// 오류 응답 / 봇 차단 사유
+    pub blocked: Option<&'a str>,
+    pub challenge: Option<&'a str>,
+    /// None = 수행 안 함
+    pub redirect_chain: Option<&'a Result<Vec<Hop>, String>>,
+    /// None = 수행 안 함 또는 IP/localhost 대상
+    pub host_variant: Option<&'a HostVariant>,
+    pub extended: &'a Extended,
+}
+
+/// (AI 크롤러 id, 해당 UA 로 요청한 결과)
+pub type AiUaResult = (
+    &'static str,
+    Result<(u16, Url, Option<&'static str>), String>,
+);
+
+struct Out(Vec<Check>);
+
+impl Out {
+    fn push(
+        &mut self,
+        id: impl Into<String>,
+        category: Category,
+        label: impl Into<String>,
+        presence: Presence,
+        value: Option<Value>,
+        note: Option<String>,
+    ) {
+        self.0.push(Check {
+            id: id.into(),
+            category,
+            label: label.into(),
+            presence,
+            value,
+            note,
+        });
+    }
+
+    /// 값이 있으면 Present, 없으면 Missing.
+    fn opt(&mut self, id: &str, cat: Category, label: &str, v: Option<&str>) {
+        self.push(
+            id,
+            cat,
+            label,
+            Presence::from_bool(v.is_some()),
+            v.map(|s| json!(s)),
+            None,
+        );
+    }
+
+    fn text_len(&mut self, id: &str, cat: Category, label: &str, v: Option<&str>) {
+        let value = v.map(|s| json!({ "text": s, "length": s.chars().count() }));
+        self.push(
+            id,
+            cat,
+            label,
+            Presence::from_bool(v.is_some()),
+            value,
+            None,
+        );
+    }
+}
+
+fn header(h: &HeaderMap, name: &str) -> Option<String> {
+    let vals: Vec<&str> = h
+        .get_all(name)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .collect();
+    (!vals.is_empty()).then(|| vals.join(", "))
+}
+
+fn file_value(p: &FileProbe) -> Value {
+    json!({
+        "url": p.url,
+        "statusCode": p.status_code,
+        "finalUrl": p.final_url,
+        "redirected": p.redirected,
+        "contentType": p.content_type,
+        "formatValid": p.format_valid,
+        "bytes": p.body.as_ref().map(String::len),
+    })
+}
+
+fn file_presence(p: &FileProbe) -> (Presence, Option<String>) {
+    if let Some(e) = &p.error {
+        return (Presence::Unknown, Some(format!("요청 실패: {e}")));
+    }
+    if p.exists {
+        return (Presence::Present, None);
+    }
+    let note = if p.redirected {
+        format!(
+            "다른 경로로 리다이렉트됨 ({})",
+            p.final_url.as_deref().unwrap_or_default()
+        )
+    } else if p.status_code.is_some_and(|s| s < 400) && p.body.as_deref() == Some("") {
+        "빈 응답 (0 byte)".to_string()
+    } else if !p.format_valid && p.status_code.is_some_and(|s| s < 400) {
+        "응답이 기대 형식이 아님 (HTML 페이지 등)".to_string()
+    } else {
+        format!("HTTP {}", p.status_code.unwrap_or_default())
+    };
+    (Presence::Missing, Some(note))
+}
+
+fn link_check(out: &mut Out, id: &str, label: &str, raw: Option<&str>, probe: Option<&LinkProbe>) {
+    let Some(raw) = raw else {
+        out.push(
+            id,
+            Category::Links,
+            label,
+            Presence::NotApplicable,
+            None,
+            Some("링크가 페이지에 없음".into()),
+        );
+        return;
+    };
+    let Some(p) = probe else {
+        out.push(
+            id,
+            Category::Links,
+            label,
+            Presence::Unknown,
+            Some(json!({ "href": raw })),
+            Some("검증 결과 없음".into()),
+        );
+        return;
+    };
+    let value =
+        json!({ "href": raw, "url": p.url, "statusCode": p.status_code, "finalUrl": p.final_url });
+    let (presence, note) = match (&p.error, p.status_code) {
+        (Some(e), _) => (Presence::Unknown, Some(format!("요청 실패: {e}"))),
+        (None, Some(_)) if p.reachable() => (Presence::Present, None),
+        (None, Some(s)) => (Presence::Missing, Some(format!("HTTP {s}"))),
+        (None, None) => (Presence::Unknown, None),
+    };
+    out.push(id, Category::Links, label, presence, Some(value), note);
+}
+
+fn cert_mark_check(out: &mut Out, s: &CertMarkSignals, body_text_len: usize) {
+    let value = json!({
+        "issuer": s.issuer,
+        "lookupUrl": s.lookup_url,
+        "textSignal": s.text_signal,
+        "filenameSignal": s.filename_signal,
+        "bodyTextLength": body_text_len,
+    });
+    let (presence, note) = if let Some(issuer) = s.issuer {
+        (
+            Presence::Present,
+            Some(format!(
+                "{issuer} 링크 확인. 부착 사실만으로 인증 유효 여부는 알 수 없음"
+            )),
+        )
+    } else if s.text_signal && s.filename_signal {
+        (
+            Presence::Present,
+            Some("마크 이미지(alt 문구 + 파일명) 확인. 발급기관 미특정".into()),
+        )
+    } else if s.text_signal || s.filename_signal {
+        (
+            Presence::Unknown,
+            Some("인증 관련 표기 일부만 발견되어 확정 불가".into()),
+        )
+    } else if body_text_len < CSR_SHELL_TEXT_LEN {
+        (
+            Presence::Unknown,
+            Some(format!(
+                "정적 HTML body 텍스트 {body_text_len}자 (CSR 셸 추정) — 판별 불가"
+            )),
+        )
+    } else {
+        (Presence::Missing, None)
+    };
+    out.push(
+        "accessibility.cert_mark",
+        Category::Accessibility,
+        "정보통신접근성 품질인증 마크",
+        presence,
+        Some(value),
+        note,
+    );
+}
+
+const ORG_TYPES: &[&str] = &[
+    "Organization",
+    "Corporation",
+    "LocalBusiness",
+    "NGO",
+    "EducationalOrganization",
+    "GovernmentOrganization",
+    "OnlineBusiness",
+    "OnlineStore",
+    "NewsMediaOrganization",
+];
+const ARTICLE_TYPES: &[&str] = &[
+    "Article",
+    "NewsArticle",
+    "BlogPosting",
+    "TechArticle",
+    "Report",
+];
+
+pub fn build(i: &Inputs) -> Vec<Check> {
+    use Category::*;
+    let f = i.facts;
+    let page = i.page;
+    let base = &page.final_url;
+    let mut o = Out(Vec::new());
+
+    // ===== 기본 메타 =====
+    o.text_len("meta.title", Meta, "title", f.title.as_deref());
+    o.text_len(
+        "meta.description",
+        Meta,
+        "meta description",
+        f.meta("description"),
+    );
+    o.opt("meta.keywords", Meta, "meta keywords", f.meta("keywords"));
+    o.opt("meta.viewport", Meta, "meta viewport", f.meta("viewport"));
+    let header_charset = header(&page.headers, "content-type").and_then(|ct| {
+        ct.to_ascii_lowercase()
+            .split("charset=")
+            .nth(1)
+            .map(|c| c.trim().to_string())
+    });
+    o.push(
+        "meta.charset",
+        Meta,
+        "charset",
+        Presence::from_bool(f.charset.is_some() || header_charset.is_some()),
+        Some(json!({ "meta": f.charset, "header": header_charset })),
+        None,
+    );
+    o.opt("meta.html_lang", Meta, "html lang", f.lang.as_deref());
+    match &f.canonical {
+        Some(href) => {
+            let abs = base.join(href).ok();
+            let same = abs.as_ref().is_some_and(|a| {
+                a.as_str().trim_end_matches('/') == base.as_str().trim_end_matches('/')
+            });
+            o.push(
+                "meta.canonical",
+                Meta,
+                "canonical link",
+                Presence::Present,
+                Some(json!({ "href": href, "resolved": abs.map(|u| u.to_string()), "selfReferencing": same })),
+                None,
+            );
+        }
+        None => o.push(
+            "meta.canonical",
+            Meta,
+            "canonical link",
+            Presence::Missing,
+            None,
+            None,
+        ),
+    }
+    o.opt(
+        "meta.theme_color",
+        Meta,
+        "theme-color",
+        f.meta("theme-color"),
+    );
+    o.opt("meta.author", Meta, "meta author", f.meta("author"));
+    o.opt("meta.favicon", Meta, "favicon", f.favicon.as_deref());
+    o.opt(
+        "meta.apple_touch_icon",
+        Meta,
+        "apple-touch-icon",
+        f.apple_touch_icon.as_deref(),
+    );
+    o.opt(
+        "meta.manifest",
+        Meta,
+        "web app manifest",
+        f.manifest.as_deref(),
+    );
+    let wk = i.well_known;
+    for (id, label, probe) in [
+        (
+            "meta.favicon_ico_file",
+            "/favicon.ico 파일",
+            &wk.favicon_ico,
+        ),
+        (
+            "meta.apple_touch_icon_file",
+            "/apple-touch-icon.png 파일",
+            &wk.apple_touch_icon,
+        ),
+    ] {
+        let (p, n) = file_presence(probe);
+        o.push(id, Meta, label, p, Some(file_value(probe)), n);
+    }
+    host_mismatch(
+        &mut o,
+        "meta.canonical_host_mismatch",
+        Meta,
+        "canonical 호스트 불일치",
+        f.canonical.as_deref(),
+        base,
+    );
+    o.opt(
+        "meta.google_site_verification",
+        Meta,
+        "Google Search Console 인증",
+        f.meta("google-site-verification"),
+    );
+    o.opt(
+        "meta.naver_site_verification",
+        Meta,
+        "네이버 서치어드바이저 인증",
+        f.meta("naver-site-verification"),
+    );
+
+    // ===== 색인 제어 =====
+    let robots_meta = f.meta("robots");
+    o.opt("indexing.meta_robots", Indexing, "meta robots", robots_meta);
+    let directives: Vec<String> = [f.meta("robots"), f.meta("googlebot")]
+        .into_iter()
+        .flatten()
+        .flat_map(|v| v.split(',').map(|d| d.trim().to_ascii_lowercase()))
+        .collect();
+    let has_directive = |d: &str| {
+        directives
+            .iter()
+            .any(|x| x == d || (d == "noindex" && x == "none"))
+    };
+    o.push(
+        "indexing.meta_noindex",
+        Indexing,
+        "meta noindex 지시",
+        Presence::from_bool(has_directive("noindex")),
+        None,
+        None,
+    );
+    o.push(
+        "indexing.meta_nofollow",
+        Indexing,
+        "meta nofollow 지시",
+        Presence::from_bool(has_directive("nofollow") || directives.iter().any(|x| x == "none")),
+        None,
+        None,
+    );
+    let x_robots = header(&page.headers, "x-robots-tag");
+    o.opt(
+        "indexing.x_robots_tag",
+        Indexing,
+        "X-Robots-Tag 헤더",
+        x_robots.as_deref(),
+    );
+    let header_noindex = x_robots.as_deref().is_some_and(|v| {
+        let v = v.to_ascii_lowercase();
+        v.contains("noindex") || v.split([',', ':']).any(|t| t.trim() == "none")
+    });
+    o.push(
+        "indexing.header_noindex",
+        Indexing,
+        "X-Robots-Tag noindex",
+        Presence::from_bool(header_noindex),
+        None,
+        None,
+    );
+    o.opt(
+        "indexing.meta_refresh",
+        Indexing,
+        "meta refresh 리다이렉트",
+        f.meta_refresh.as_deref(),
+    );
+
+    // ===== Open Graph / Twitter / Facebook =====
+    for (key, label) in [
+        ("og:title", "og:title"),
+        ("og:description", "og:description"),
+        ("og:image", "og:image"),
+        ("og:url", "og:url"),
+        ("og:type", "og:type"),
+        ("og:site_name", "og:site_name"),
+        ("og:locale", "og:locale"),
+    ] {
+        o.opt(
+            &format!("open_graph.{}", &key[3..]),
+            OpenGraph,
+            label,
+            f.meta(key),
+        );
+    }
+    host_mismatch(
+        &mut o,
+        "open_graph.url_host_mismatch",
+        OpenGraph,
+        "og:url 호스트 불일치",
+        f.meta("og:url"),
+        base,
+    );
+    for key in ["card", "title", "description", "image"] {
+        o.opt(
+            &format!("twitter.{key}"),
+            Twitter,
+            &format!("twitter:{key}"),
+            f.meta(&format!("twitter:{key}")),
+        );
+    }
+    o.opt(
+        "facebook.app_id",
+        Facebook,
+        "fb:app_id",
+        f.meta("fb:app_id"),
+    );
+    o.opt("facebook.pages", Facebook, "fb:pages", f.meta("fb:pages"));
+    o.opt(
+        "facebook.article_publisher",
+        Facebook,
+        "article:publisher",
+        f.meta("article:publisher"),
+    );
+
+    // ===== 구조화 데이터 =====
+    let ld = &f.json_ld;
+    o.push(
+        "structured_data.json_ld",
+        StructuredData,
+        "JSON-LD",
+        Presence::from_bool(ld.blocks > 0),
+        (ld.blocks > 0).then(|| json!({ "blocks": ld.blocks, "invalidBlocks": ld.invalid_blocks, "types": ld.types })),
+        None,
+    );
+    o.push(
+        "structured_data.json_ld_invalid",
+        StructuredData,
+        "JSON 파싱 불가 JSON-LD 블록",
+        if ld.blocks == 0 {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(ld.invalid_blocks > 0)
+        },
+        (ld.blocks > 0).then(|| json!(ld.invalid_blocks)),
+        None,
+    );
+    let has_type = |types: &[&str]| {
+        ld.types
+            .iter()
+            .find(|t| types.contains(&t.as_str()))
+            .cloned()
+    };
+    for (id, label, types) in [
+        ("organization", "Organization 스키마", ORG_TYPES),
+        ("website", "WebSite 스키마", &["WebSite"][..]),
+        (
+            "breadcrumb_list",
+            "BreadcrumbList 스키마",
+            &["BreadcrumbList"][..],
+        ),
+        ("faq_page", "FAQPage 스키마", &["FAQPage"][..]),
+        ("article", "Article 스키마", ARTICLE_TYPES),
+        ("product", "Product 스키마", &["Product"][..]),
+    ] {
+        let found = has_type(types);
+        o.push(
+            format!("structured_data.type.{id}"),
+            StructuredData,
+            label,
+            Presence::from_bool(found.is_some()),
+            found.map(Value::from),
+            None,
+        );
+    }
+    o.push(
+        "structured_data.same_as",
+        StructuredData,
+        "sameAs (외부 프로필 연결)",
+        Presence::from_bool(!ld.same_as.is_empty()),
+        (!ld.same_as.is_empty()).then(|| json!(ld.same_as)),
+        None,
+    );
+    o.push(
+        "structured_data.microdata",
+        StructuredData,
+        "Microdata (itemscope)",
+        Presence::from_bool(f.has_microdata),
+        None,
+        None,
+    );
+    o.push(
+        "structured_data.hreflang",
+        StructuredData,
+        "hreflang 링크",
+        Presence::from_bool(!f.hreflang.is_empty()),
+        (!f.hreflang.is_empty()).then(|| {
+            json!(
+                f.hreflang
+                    .iter()
+                    .map(|h| json!({ "lang": h.lang, "href": h.href }))
+                    .collect::<Vec<_>>()
+            )
+        }),
+        None,
+    );
+
+    // ===== 본문 구조 =====
+    o.push(
+        "content.h1",
+        Content,
+        "h1 태그",
+        Presence::from_bool(f.h1_count > 0),
+        Some(json!(f.h1_count)),
+        None,
+    );
+    o.push(
+        "content.h2",
+        Content,
+        "h2 태그",
+        Presence::from_bool(f.h2_count > 0),
+        Some(json!(f.h2_count)),
+        None,
+    );
+    o.push(
+        "content.img_alt_missing",
+        Content,
+        "alt 누락 이미지",
+        if f.img_total == 0 {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(f.img_without_alt > 0)
+        },
+        Some(json!({ "total": f.img_total, "missing": f.img_without_alt })),
+        None,
+    );
+    o.push(
+        "content.body_text",
+        Content,
+        "정적 HTML body 텍스트",
+        Presence::from_bool(f.body_text_len > 0),
+        Some(json!(f.body_text_len)),
+        Some("JavaScript 실행 없이 받은 HTML 기준 글자 수".into()),
+    );
+    o.push(
+        "content.internal_links",
+        Content,
+        "내부 링크",
+        Presence::from_bool(f.internal_links > 0),
+        Some(json!(f.internal_links)),
+        None,
+    );
+    o.push(
+        "content.external_links",
+        Content,
+        "외부 링크",
+        Presence::from_bool(f.external_links > 0),
+        Some(json!(f.external_links)),
+        None,
+    );
+
+    // ===== 접근성 =====
+    cert_mark_check(&mut o, &signals::cert_mark(&page.body), f.body_text_len);
+
+    // ===== 분석 도구 =====
+    let google = signals::google_tracking(&page.body);
+    o.push(
+        "analytics.google",
+        Analytics,
+        "Google Analytics / GTM",
+        Presence::from_bool(!google.is_empty()),
+        (!google.is_empty()).then(|| json!(google)),
+        None,
+    );
+    o.push(
+        "analytics.naver",
+        Analytics,
+        "네이버 애널리틱스",
+        Presence::from_bool(signals::naver_analytics(&page.body)),
+        None,
+        None,
+    );
+
+    // ===== 성능 =====
+    o.push(
+        "performance.font_preload",
+        Performance,
+        "font preload",
+        Presence::from_bool(f.font_preloads > 0),
+        Some(json!(f.font_preloads)),
+        None,
+    );
+    o.push(
+        "performance.image_preload",
+        Performance,
+        "image preload",
+        Presence::from_bool(f.image_preloads > 0),
+        Some(json!(f.image_preloads)),
+        None,
+    );
+    let img_na = |b: bool| {
+        if f.img_total == 0 {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(b)
+        }
+    };
+    o.push(
+        "performance.img_dimensions_missing",
+        Performance,
+        "width/height 누락 이미지",
+        img_na(f.img_without_dimensions > 0),
+        Some(json!({ "total": f.img_total, "missing": f.img_without_dimensions })),
+        None,
+    );
+    o.push(
+        "performance.img_lazy",
+        Performance,
+        "loading=lazy 이미지",
+        img_na(f.img_lazy > 0),
+        Some(json!({ "total": f.img_total, "lazy": f.img_lazy })),
+        None,
+    );
+    o.push(
+        "performance.response_time",
+        Performance,
+        "HTML 응답 시간(ms)",
+        Presence::Present,
+        Some(json!(page.elapsed.as_millis() as u64)),
+        None,
+    );
+    o.push(
+        "performance.html_bytes",
+        Performance,
+        "HTML 크기(byte, 압축 해제)",
+        Presence::Present,
+        Some(json!(page.body_bytes)),
+        None,
+    );
+    match i.content_encoding {
+        Some(Ok(enc)) => o.opt(
+            "performance.compression",
+            Performance,
+            "응답 압축 (Content-Encoding)",
+            enc.as_deref(),
+        ),
+        Some(Err(e)) => o.push(
+            "performance.compression",
+            Performance,
+            "응답 압축 (Content-Encoding)",
+            Presence::Unknown,
+            None,
+            Some(format!("요청 실패: {e}")),
+        ),
+        None => {}
+    }
+    o.opt(
+        "performance.cache_control",
+        Performance,
+        "Cache-Control 헤더",
+        header(&page.headers, "cache-control").as_deref(),
+    );
+
+    // ===== 전송 =====
+    o.push(
+        "transport.https",
+        Transport,
+        "HTTPS",
+        Presence::from_bool(base.scheme() == "https"),
+        Some(json!(base.scheme())),
+        None,
+    );
+    o.push(
+        "transport.http_status",
+        Transport,
+        "HTTP 2xx 응답",
+        Presence::from_bool((200..300).contains(&page.status)),
+        Some(json!(page.status)),
+        None,
+    );
+    if let Some(r) = i.http_version {
+        let (presence, value, note) = match r {
+            Ok((status, final_url)) => (
+                Presence::from_bool(final_url.scheme() == "https"),
+                Some(json!({ "statusCode": status, "finalUrl": final_url.as_str() })),
+                None,
+            ),
+            Err(e) => (
+                Presence::Unknown,
+                None,
+                Some(format!("http:// 요청 실패: {e}")),
+            ),
+        };
+        o.push(
+            "transport.http_to_https_redirect",
+            Transport,
+            "HTTP → HTTPS 리다이렉트",
+            presence,
+            value,
+            note,
+        );
+    }
+    if let Some(r) = i.redirect_chain {
+        match r {
+            Ok(hops) => {
+                let redirects = &hops[..hops.len().saturating_sub(1)];
+                let value = json!(
+                    hops.iter()
+                        .map(|h| json!({ "url": h.url, "status": h.status }))
+                        .collect::<Vec<_>>()
+                );
+                o.push(
+                    "transport.redirect",
+                    Transport,
+                    "요청 URL 리다이렉트",
+                    Presence::from_bool(!redirects.is_empty()),
+                    Some(value),
+                    None,
+                );
+                let temporary: Vec<u16> = redirects
+                    .iter()
+                    .map(|h| h.status)
+                    .filter(|s| matches!(s, 302 | 303 | 307))
+                    .collect();
+                o.push(
+                    "transport.temporary_redirect",
+                    Transport,
+                    "임시 리다이렉트 (302/303/307)",
+                    if redirects.is_empty() {
+                        Presence::NotApplicable
+                    } else {
+                        Presence::from_bool(!temporary.is_empty())
+                    },
+                    (!temporary.is_empty()).then(|| json!(temporary)),
+                    None,
+                );
+            }
+            Err(e) => {
+                o.push(
+                    "transport.redirect",
+                    Transport,
+                    "요청 URL 리다이렉트",
+                    Presence::Unknown,
+                    None,
+                    Some(e.clone()),
+                );
+                o.push(
+                    "transport.temporary_redirect",
+                    Transport,
+                    "임시 리다이렉트 (302/303/307)",
+                    Presence::Unknown,
+                    None,
+                    None,
+                );
+            }
+        }
+    }
+    if let Some(v) = i.host_variant {
+        let label = "www/non-www 중복 노출";
+        match &v.result {
+            Ok((status, final_url)) => {
+                let same = final_url.host_str() == base.host_str();
+                let ok = (200..300).contains(status);
+                o.push(
+                    "transport.host_variant_duplicate",
+                    Transport,
+                    label,
+                    if !ok && !same { Presence::NotApplicable } else { Presence::from_bool(ok && !same) },
+                    Some(json!({ "variant": v.url.as_str(), "statusCode": status, "finalUrl": final_url.as_str() })),
+                    (!ok && !same).then(|| format!("대체 호스트가 HTTP {status} 응답")),
+                );
+            }
+            Err(e) => o.push(
+                "transport.host_variant_duplicate",
+                Transport,
+                label,
+                Presence::NotApplicable,
+                Some(json!({ "variant": v.url.as_str() })),
+                Some(format!("대체 호스트 접속 불가: {e}")),
+            ),
+        }
+    }
+    let (p, n) = file_presence(&wk.security_txt);
+    o.push(
+        "transport.security_txt",
+        Transport,
+        "/.well-known/security.txt",
+        p,
+        Some(file_value(&wk.security_txt)),
+        n,
+    );
+    o.opt(
+        "transport.hsts",
+        Transport,
+        "HSTS 헤더",
+        header(&page.headers, "strict-transport-security").as_deref(),
+    );
+    o.push(
+        "transport.mixed_content",
+        Transport,
+        "혼합 콘텐츠 (https 페이지의 http 리소스)",
+        if base.scheme() != "https" {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(!f.insecure_subresources.is_empty())
+        },
+        (!f.insecure_subresources.is_empty()).then(|| json!(f.insecure_subresources)),
+        None,
+    );
+
+    // ===== 크롤링 =====
+    let (p, n) = file_presence(i.sitemap);
+    o.push(
+        "crawling.sitemap_xml",
+        Crawling,
+        "sitemap.xml",
+        p,
+        Some(file_value(i.sitemap)),
+        n,
+    );
+    sitemap_checks(&mut o, i, base);
+    let (p, n) = file_presence(i.robots);
+    o.push(
+        "crawling.robots_txt",
+        Crawling,
+        "robots.txt",
+        p,
+        Some(file_value(i.robots)),
+        n,
+    );
+
+    // robots.txt 가 없으면(4xx) 모두 허용. 요청 실패/5xx 는 판별 불가.
+    let robots: Result<Robots, String> = if i.robots.exists {
+        Ok(Robots::parse(i.robots.body.as_deref().unwrap_or_default()))
+    } else if let Some(e) = &i.robots.error {
+        Err(format!("robots.txt 요청 실패: {e}"))
+    } else if i.robots.status_code.is_some_and(|s| s >= 500) {
+        Err(format!(
+            "robots.txt HTTP {}",
+            i.robots.status_code.unwrap_or_default()
+        ))
+    } else {
+        Ok(Robots::default())
+    };
+    let robots_note =
+        (!i.robots.exists && robots.is_ok()).then(|| "robots.txt 없음 — 기본 허용".to_string());
+
+    match &robots {
+        Ok(r) if i.robots.exists => o.push(
+            "crawling.robots_sitemap_directive",
+            Crawling,
+            "robots.txt Sitemap 지시자",
+            Presence::from_bool(!r.sitemaps.is_empty()),
+            (!r.sitemaps.is_empty()).then(|| json!(r.sitemaps)),
+            None,
+        ),
+        _ => o.push(
+            "crawling.robots_sitemap_directive",
+            Crawling,
+            "robots.txt Sitemap 지시자",
+            Presence::NotApplicable,
+            None,
+            None,
+        ),
+    }
+    let path = base.path();
+    let allow_check = |o: &mut Out, id: String, cat: Category, label: String, token: &str| {
+        match &robots {
+        Ok(r) => o.push(
+            id,
+            cat,
+            label,
+            Presence::from_bool(r.is_allowed(token, path)),
+            Some(json!({ "token": token, "path": path, "explicitGroup": r.has_group_for(token) })),
+            robots_note.clone(),
+        ),
+        Err(e) => o.push(id, cat, label, Presence::Unknown, None, Some(e.clone())),
+    }
+    };
+    let declared = &i.sitemap_detail.declared;
+    o.push(
+        "crawling.robots_declared_sitemaps",
+        Crawling,
+        "robots.txt 선언 sitemap 접근",
+        if declared.is_empty() {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(declared.iter().all(|p| p.exists))
+        },
+        (!declared.is_empty()).then(|| {
+            json!(
+                declared
+                    .iter()
+                    .map(
+                        |p| json!({ "url": p.url, "statusCode": p.status_code, "exists": p.exists })
+                    )
+                    .collect::<Vec<_>>()
+            )
+        }),
+        (!declared.is_empty())
+            .then(|| "기본 경로(/sitemap.xml)와 다른 선언만 별도 요청".to_string()),
+    );
+    o.push(
+        "crawling.feed_link",
+        Crawling,
+        "RSS/Atom 피드 링크",
+        Presence::from_bool(!f.feeds.is_empty()),
+        (!f.feeds.is_empty()).then(|| json!(f.feeds)),
+        None,
+    );
+    allow_check(
+        &mut o,
+        "crawling.robots_allows.all".into(),
+        Crawling,
+        "robots.txt 기본(*) 허용".into(),
+        "*",
+    );
+    for (id, token, name) in SEARCH_CRAWLERS {
+        allow_check(
+            &mut o,
+            format!("crawling.robots_allows.{id}"),
+            Crawling,
+            format!("{name} 크롤러 허용 ({token})"),
+            token,
+        );
+    }
+
+    // ===== 생성형 검색(GEO) =====
+    for (id, label, probe) in [
+        ("llms_txt", "llms.txt", i.llms),
+        ("llms_full_txt", "llms-full.txt", i.llms_full),
+        ("ai_txt", "ai.txt", i.ai_txt),
+    ] {
+        let (p, n) = file_presence(probe);
+        o.push(
+            format!("geo.{id}"),
+            Geo,
+            label,
+            p,
+            Some(file_value(probe)),
+            n,
+        );
+    }
+    let llms_doc = i
+        .llms
+        .exists
+        .then(|| llms::parse(i.llms.body.as_deref().unwrap_or_default()));
+    let na_or = |b: Option<bool>| b.map_or(Presence::NotApplicable, Presence::from_bool);
+    o.push(
+        "geo.llms_txt_title",
+        Geo,
+        "llms.txt # 제목",
+        na_or(llms_doc.as_ref().map(|d| d.title.is_some())),
+        llms_doc
+            .as_ref()
+            .and_then(|d| d.title.clone())
+            .map(Value::from),
+        None,
+    );
+    o.push(
+        "geo.llms_txt_summary",
+        Geo,
+        "llms.txt > 요약",
+        na_or(llms_doc.as_ref().map(|d| d.has_summary)),
+        None,
+        None,
+    );
+    o.push(
+        "geo.llms_txt_sections",
+        Geo,
+        "llms.txt ## 섹션",
+        na_or(llms_doc.as_ref().map(|d| d.sections > 0)),
+        llms_doc.as_ref().map(|d| json!(d.sections)),
+        None,
+    );
+    o.push(
+        "geo.llms_txt_links",
+        Geo,
+        "llms.txt 링크 목록",
+        na_or(llms_doc.as_ref().map(|d| d.links > 0)),
+        llms_doc.as_ref().map(|d| json!(d.links)),
+        None,
+    );
+    let tdm_header = header(&page.headers, "tdm-reservation");
+    let tdm_meta = f.meta("tdm-reservation");
+    o.push(
+        "geo.tdm_reservation",
+        Geo,
+        "TDM 예약 (tdmrep.json / 헤더 / 메타)",
+        if wk.tdmrep.error.is_some() && tdm_header.is_none() && tdm_meta.is_none() {
+            Presence::Unknown
+        } else {
+            Presence::from_bool(wk.tdmrep.exists || tdm_header.is_some() || tdm_meta.is_some())
+        },
+        Some(json!({ "file": file_value(&wk.tdmrep), "fileExists": wk.tdmrep.exists, "header": tdm_header, "meta": tdm_meta })),
+        None,
+    );
+    for (id, token, name) in AI_CRAWLERS {
+        allow_check(
+            &mut o,
+            format!("geo.robots_allows.{id}"),
+            Geo,
+            format!("{name} 크롤러 허용 ({token})"),
+            token,
+        );
+    }
+    for (id, result) in i.ai_ua {
+        let label = format!("AI UA 응답 ({id})");
+        match result {
+            Ok((status, final_url, challenge)) => o.push(
+                format!("geo.ua_access.{id}"),
+                Geo,
+                label,
+                Presence::from_bool((200..300).contains(status) && challenge.is_none()),
+                Some(json!({ "statusCode": status, "url": final_url.as_str(), "challenge": challenge })),
+                Some("User-Agent 문자열만 바꾼 요청 결과. 크롤러 IP 검증을 하는 방화벽에서는 실제 크롤러와 결과가 다를 수 있음".into()),
+            ),
+            Err(e) => o.push(format!("geo.ua_access.{id}"), Geo, label, Presence::Unknown, None, Some(format!("요청 실패: {e}"))),
+        }
+    }
+    let noai: Vec<&str> = ["noai", "noimageai"]
+        .into_iter()
+        .filter(|d| has_directive(d))
+        .collect();
+    o.push(
+        "geo.meta_noai",
+        Geo,
+        "meta noai / noimageai 지시",
+        Presence::from_bool(!noai.is_empty()),
+        (!noai.is_empty()).then(|| json!(noai)),
+        None,
+    );
+
+    // ===== 404 페이지 =====
+    match i.not_found {
+        Ok((status, body)) => {
+            let default = signals::is_framework_default_404(body);
+            let is404 = *status == 404;
+            o.push(
+                "not_found_page.returns_404",
+                NotFoundPage,
+                "없는 경로에 404 응답",
+                Presence::from_bool(is404),
+                Some(json!(status)),
+                None,
+            );
+            o.push(
+                "not_found_page.custom",
+                NotFoundPage,
+                "커스텀 404 페이지",
+                if is404 {
+                    Presence::from_bool(!default && body.len() > 2_048)
+                } else {
+                    Presence::NotApplicable
+                },
+                Some(json!({ "bodyBytes": body.len(), "frameworkDefault": default })),
+                None,
+            );
+        }
+        Err(e) => {
+            o.push(
+                "not_found_page.returns_404",
+                NotFoundPage,
+                "없는 경로에 404 응답",
+                Presence::Unknown,
+                None,
+                Some(format!("요청 실패: {e}")),
+            );
+            o.push(
+                "not_found_page.custom",
+                NotFoundPage,
+                "커스텀 404 페이지",
+                Presence::Unknown,
+                None,
+                None,
+            );
+        }
+    }
+
+    // ===== 링크 검증 =====
+    if let Some(l) = i.links {
+        link_check(
+            &mut o,
+            "links.favicon",
+            "favicon 접근",
+            f.favicon.as_deref(),
+            l.favicon.as_ref(),
+        );
+        link_check(
+            &mut o,
+            "links.apple_touch_icon",
+            "apple-touch-icon 접근",
+            f.apple_touch_icon.as_deref(),
+            l.apple_touch_icon.as_ref(),
+        );
+        link_check(
+            &mut o,
+            "links.canonical",
+            "canonical 접근",
+            f.canonical.as_deref(),
+            l.canonical.as_ref(),
+        );
+        link_check(
+            &mut o,
+            "links.og_image",
+            "og:image 접근",
+            f.meta("og:image"),
+            l.og_image.as_ref(),
+        );
+        link_check(
+            &mut o,
+            "links.twitter_image",
+            "twitter:image 접근",
+            f.meta("twitter:image"),
+            l.twitter_image.as_ref(),
+        );
+        link_check(
+            &mut o,
+            "links.manifest",
+            "manifest 접근",
+            f.manifest.as_deref(),
+            l.manifest.as_ref(),
+        );
+        link_check(
+            &mut o,
+            "links.feed",
+            "피드 접근",
+            f.feeds.first().map(String::as_str),
+            l.feed.as_ref(),
+        );
+    }
+
+    extended_checks(&mut o, i, &robots);
+    more_checks(&mut o, i, &robots);
+    canonical_hreflang_weight_checks(&mut o, i);
+    if let Some(site) = i.site {
+        site_checks(&mut o, i, site);
+    }
+
+    // ===== 대상 페이지 상태 =====
+    o.push(
+        "transport.bot_challenge",
+        Category::Transport,
+        "봇 차단·챌린지 페이지",
+        Presence::from_bool(i.challenge.is_some()),
+        i.challenge.map(Value::from),
+        None,
+    );
+    for (id, kind, label) in [
+        (
+            "transport.meta_refresh_redirect",
+            "meta_refresh",
+            "meta refresh 리다이렉트 (5초 이하, 따라감)",
+        ),
+        (
+            "transport.js_redirect",
+            "javascript",
+            "JavaScript 리다이렉트 (빈 페이지의 location 이동, 따라감)",
+        ),
+    ] {
+        let hops: Vec<Value> = i
+            .refresh_hops
+            .iter()
+            .filter(|h| h.kind == kind)
+            .map(|h| json!({ "from": h.from, "to": h.to, "delay": h.delay }))
+            .collect();
+        o.push(
+            id,
+            Category::Transport,
+            label,
+            Presence::from_bool(!hops.is_empty()),
+            (!hops.is_empty()).then(|| json!(hops)),
+            None,
+        );
+    }
+    o.push(
+        "transport.client_redirect_total",
+        Category::Transport,
+        "클라이언트 측 리다이렉트 수",
+        Presence::from_bool(!i.refresh_hops.is_empty()),
+        Some(json!(i.refresh_hops.len())),
+        None,
+    );
+    if let Some(reason) = i.blocked {
+        for c in o.0.iter_mut().filter(|c| depends_on_page(&c.id)) {
+            c.presence = Presence::Unknown;
+            c.note = Some(format!(
+                "대상 페이지가 {reason} — 실제 페이지 내용으로 판별 불가"
+            ));
+        }
+    }
+    o.0
+}
+
+fn host_mismatch(o: &mut Out, id: &str, cat: Category, label: &str, raw: Option<&str>, base: &Url) {
+    let Some(u) = raw.and_then(|r| base.join(r).ok()) else {
+        o.push(id, cat, label, Presence::NotApplicable, None, None);
+        return;
+    };
+    o.push(
+        id,
+        cat,
+        label,
+        Presence::from_bool(u.host_str() != base.host_str()),
+        Some(json!({ "host": u.host_str(), "finalHost": base.host_str() })),
+        None,
+    );
+}
+
+fn sitemap_checks(o: &mut Out, i: &Inputs, base: &Url) {
+    use Category::Crawling;
+    let chosen = pick_sitemap(i.sitemap, &i.sitemap_detail.declared);
+    o.push(
+        "crawling.sitemap_any",
+        Crawling,
+        "sitemap (기본 경로 또는 robots 선언)",
+        Presence::from_bool(chosen.is_some()),
+        chosen.map(|p| json!(p.url)),
+        None,
+    );
+    let Some(chosen) = chosen else { return };
+    if is_gz(chosen) {
+        o.push(
+            "crawling.sitemap_entries",
+            Crawling,
+            "sitemap 항목 수",
+            Presence::Unknown,
+            None,
+            Some("gzip 압축 sitemap 은 내용 분석 생략".into()),
+        );
+        return;
+    }
+    let s = sitemap::summarize(chosen.body.as_deref().unwrap_or_default());
+    o.push(
+        "crawling.sitemap_entries",
+        Crawling,
+        "sitemap 항목 수",
+        Presence::from_bool(s.entries > 0),
+        Some(json!({ "url": chosen.url, "isIndex": s.is_index, "entries": s.entries })),
+        None,
+    );
+    let na = s.entries == 0;
+    o.push(
+        "crawling.sitemap_lastmod",
+        Crawling,
+        "sitemap lastmod",
+        if na {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(s.with_lastmod > 0)
+        },
+        Some(json!({ "withLastmod": s.with_lastmod, "entries": s.entries })),
+        None,
+    );
+    let mut foreign: Vec<String> = Vec::new();
+    for loc in &s.locs {
+        let host = Url::parse(loc)
+            .ok()
+            .and_then(|u| u.host_str().map(str::to_string));
+        if host.as_deref() != base.host_str() {
+            let h = host.unwrap_or_else(|| loc.clone());
+            if !foreign.contains(&h) {
+                foreign.push(h);
+            }
+        }
+    }
+    o.push(
+        "crawling.sitemap_foreign_host",
+        Crawling,
+        "sitemap 내 다른 호스트 URL",
+        if na {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(!foreign.is_empty())
+        },
+        (!foreign.is_empty()).then(|| json!(foreign)),
+        None,
+    );
+    let samples = &i.sitemap_detail.samples;
+    if samples.is_empty() {
+        return;
+    }
+    let broken: Vec<Value> = samples
+        .iter()
+        .filter_map(|(url, r)| match r {
+            Ok(p) if (200..300).contains(&p.status) => None,
+            Ok(p) => Some(json!({ "url": url, "statusCode": p.status })),
+            Err(e) => Some(json!({ "url": url, "error": e })),
+        })
+        .collect();
+    o.push(
+        "crawling.sitemap_broken_urls",
+        Crawling,
+        "sitemap 샘플 URL 중 비정상 응답",
+        Presence::from_bool(!broken.is_empty()),
+        Some(json!({ "sampled": samples.len(), "broken": broken })),
+        Some(format!(
+            "{}개 URL 표본 요청 (리다이렉트 추적 후 2xx 가 아닌 것)",
+            samples.len()
+        )),
+    );
+    if s.is_index {
+        return;
+    }
+    let pages: Vec<(&String, &SamplePage)> = samples
+        .iter()
+        .filter_map(|(u, r)| {
+            r.as_ref()
+                .ok()
+                .filter(|p| (200..300).contains(&p.status))
+                .map(|p| (u, p))
+        })
+        .collect();
+    let na = pages.is_empty();
+    let noindex: Vec<&String> = pages
+        .iter()
+        .filter(|(_, p)| p.noindex)
+        .map(|(u, _)| *u)
+        .collect();
+    o.push(
+        "crawling.sitemap_noindex_pages",
+        Crawling,
+        "sitemap 표본 중 noindex 페이지",
+        if na {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(!noindex.is_empty())
+        },
+        Some(json!({ "checked": pages.len(), "noindex": noindex })),
+        None,
+    );
+    let mismatched: Vec<Value> = pages
+        .iter()
+        .filter_map(|(u, p)| {
+            let c = p.canonical.as_deref()?;
+            let same = c.trim_end_matches('/') == u.trim_end_matches('/')
+                || c.trim_end_matches('/') == p.final_url.as_str().trim_end_matches('/');
+            (!same).then(|| json!({ "url": u, "canonical": c }))
+        })
+        .collect();
+    o.push(
+        "crawling.sitemap_canonical_mismatch",
+        Crawling,
+        "sitemap 표본 중 canonical 이 다른 URL 인 페이지",
+        if na {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(!mismatched.is_empty())
+        },
+        Some(json!({ "checked": pages.len(), "mismatched": mismatched })),
+        None,
+    );
+}
+
+fn count_presence(n: usize, total: usize) -> Presence {
+    if total == 0 {
+        Presence::NotApplicable
+    } else {
+        Presence::from_bool(n > 0)
+    }
+}
+
+fn same_url(a: &Url, b: &Url) -> bool {
+    a.as_str().trim_end_matches('/') == b.as_str().trim_end_matches('/')
+}
+
+/// 호스트와 경로가 정확히 같은지 (끝 슬래시 차이도 구분, 쿼리·fragment 무시).
+fn same_path(a: &Url, b: &Url) -> bool {
+    a.host_str() == b.host_str() && a.path() == b.path()
+}
+
+fn primary_lang(s: &str) -> String {
+    s.split(['-', '_'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+}
+
+/// A·B 그룹 추가 항목 + 웹 접근성.
+fn extended_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
+    use Category::*;
+    let f = i.facts;
+    let x = &f.extra;
+    let page = i.page;
+    let base = &page.final_url;
+    let ext = i.extended;
+
+    // ===== 기본 메타 =====
+    let dups: serde_json::Map<String, Value> = x
+        .tag_counts
+        .iter()
+        .filter(|(_, n)| **n > 1)
+        .map(|(k, n)| (k.to_string(), json!(n)))
+        .collect();
+    o.push(
+        "meta.duplicate_tags",
+        Meta,
+        "중복 태그 (title·description·canonical·viewport·robots)",
+        Presence::from_bool(!dups.is_empty()),
+        Some(json!(x.tag_counts)),
+        Some("정적 HTML 전체 기준 (body 안 스트리밍 메타 태그 포함, SVG title 제외)".into()),
+    );
+    let locale = f.meta("og:locale");
+    o.push(
+        "meta.lang_locale_mismatch",
+        Meta,
+        "html lang ↔ og:locale 언어 불일치",
+        match (f.lang.as_deref(), locale) {
+            (Some(l), Some(loc)) => Presence::from_bool(primary_lang(l) != primary_lang(loc)),
+            _ => Presence::NotApplicable,
+        },
+        Some(json!({ "lang": f.lang, "ogLocale": locale })),
+        None,
+    );
+    o.opt(
+        "meta.generator",
+        Meta,
+        "meta generator",
+        f.meta("generator"),
+    );
+    let fw = signals::frameworks(&page.body);
+    o.push(
+        "meta.framework",
+        Meta,
+        "프레임워크 / CMS 흔적",
+        Presence::from_bool(!fw.is_empty()),
+        (!fw.is_empty()).then(|| json!(fw)),
+        None,
+    );
+
+    // ===== Open Graph / Twitter =====
+    for (id, key) in [
+        ("image_width", "og:image:width"),
+        ("image_height", "og:image:height"),
+        ("image_alt", "og:image:alt"),
+    ] {
+        o.opt(&format!("open_graph.{id}"), OpenGraph, key, f.meta(key));
+    }
+    match &ext.og_image {
+        None => o.push(
+            "open_graph.image_file",
+            OpenGraph,
+            "og:image 실제 파일",
+            Presence::NotApplicable,
+            None,
+            None,
+        ),
+        Some(Err(e)) => o.push(
+            "open_graph.image_file",
+            OpenGraph,
+            "og:image 실제 파일",
+            Presence::Unknown,
+            None,
+            Some(format!("요청 실패: {e}")),
+        ),
+        Some(Ok(img)) => {
+            let decoded = img.width.is_some();
+            o.push(
+                "open_graph.image_file",
+                OpenGraph,
+                "og:image 실제 파일",
+                Presence::from_bool((200..300).contains(&img.status) && decoded),
+                Some(json!({
+                    "url": img.url, "statusCode": img.status, "contentType": img.content_type,
+                    "bytes": img.bytes, "truncated": img.truncated, "width": img.width, "height": img.height,
+                })),
+                (!decoded).then(|| "이미지 크기를 읽을 수 없음".to_string()),
+            );
+        }
+    }
+    o.opt(
+        "twitter.site",
+        Twitter,
+        "twitter:site",
+        f.meta("twitter:site"),
+    );
+    o.opt(
+        "twitter.creator",
+        Twitter,
+        "twitter:creator",
+        f.meta("twitter:creator"),
+    );
+
+    // ===== 구조화 데이터 =====
+    let has_hreflang = !f.hreflang.is_empty();
+    o.push(
+        "structured_data.hreflang_x_default",
+        StructuredData,
+        "hreflang x-default",
+        if has_hreflang {
+            Presence::from_bool(
+                f.hreflang
+                    .iter()
+                    .any(|h| h.lang.eq_ignore_ascii_case("x-default")),
+            )
+        } else {
+            Presence::NotApplicable
+        },
+        None,
+        None,
+    );
+    o.push(
+        "structured_data.hreflang_self",
+        StructuredData,
+        "hreflang 자기 참조",
+        if has_hreflang {
+            Presence::from_bool(
+                f.hreflang
+                    .iter()
+                    .any(|h| base.join(&h.href).is_ok_and(|u| same_url(&u, base))),
+            )
+        } else {
+            Presence::NotApplicable
+        },
+        None,
+        None,
+    );
+    for (id, types, required) in extra::SCHEMA_REQUIRED {
+        let objs: Vec<&extra::LdObject> = x
+            .ld_objects
+            .iter()
+            .filter(|ob| ob.types.iter().any(|t| types.contains(&t.as_str())))
+            .collect();
+        let label = format!("{} 스키마 필수 속성", types[0]);
+        if objs.is_empty() {
+            o.push(
+                format!("structured_data.required.{id}"),
+                StructuredData,
+                label,
+                Presence::NotApplicable,
+                None,
+                None,
+            );
+            continue;
+        }
+        let best: Vec<&str> = objs
+            .iter()
+            .map(|ob| {
+                required
+                    .iter()
+                    .copied()
+                    .filter(|p| !ob.has(p))
+                    .collect::<Vec<_>>()
+            })
+            .min_by_key(Vec::len)
+            .unwrap_or_default();
+        o.push(
+            format!("structured_data.required.{id}"),
+            StructuredData,
+            label,
+            Presence::from_bool(best.is_empty()),
+            Some(json!({ "required": required, "missing": best })),
+            None,
+        );
+    }
+
+    // ===== 본문 구조 =====
+    o.push(
+        "content.heading_skip",
+        Content,
+        "헤딩 레벨 건너뜀",
+        count_presence(x.heading_skips.len(), x.heading_levels.len()),
+        (!x.heading_skips.is_empty()).then(|| json!(x.heading_skips)),
+        None,
+    );
+    o.push(
+        "content.internal_nofollow",
+        Content,
+        "내부 링크 nofollow",
+        Presence::from_bool(x.internal_nofollow > 0),
+        Some(json!(x.internal_nofollow)),
+        None,
+    );
+    if let Some(samples) = &ext.internal_samples {
+        let broken: Vec<Value> = samples
+            .iter()
+            .filter_map(|(u, r)| match r {
+                Ok((st, _)) if (200..300).contains(st) => None,
+                Ok((st, _)) => Some(json!({ "url": u, "statusCode": st })),
+                Err(e) => Some(json!({ "url": u, "error": e })),
+            })
+            .collect();
+        o.push(
+            "content.broken_internal_links",
+            Content,
+            "내부 링크 표본 중 비정상 응답",
+            if samples.is_empty() {
+                Presence::NotApplicable
+            } else {
+                Presence::from_bool(!broken.is_empty())
+            },
+            Some(json!({ "sampled": samples.len(), "broken": broken })),
+            None,
+        );
+    }
+
+    // ===== 성능 =====
+    o.push(
+        "performance.render_blocking_scripts",
+        Performance,
+        "head 렌더링 차단 스크립트 (async/defer 없음)",
+        Presence::from_bool(!x.render_blocking_scripts.is_empty()),
+        (!x.render_blocking_scripts.is_empty()).then(|| json!(x.render_blocking_scripts)),
+        None,
+    );
+    o.push(
+        "performance.head_stylesheets",
+        Performance,
+        "head 외부 스타일시트",
+        Presence::from_bool(x.head_stylesheets > 0),
+        Some(json!(x.head_stylesheets)),
+        None,
+    );
+    o.push(
+        "performance.preconnect",
+        Performance,
+        "preconnect / dns-prefetch",
+        Presence::from_bool(!x.preconnect.is_empty()),
+        (!x.preconnect.is_empty()).then(|| json!(x.preconnect)),
+        None,
+    );
+    let modern = x
+        .image_formats
+        .iter()
+        .filter(|(k, _)| matches!(k.as_str(), "webp" | "avif"))
+        .map(|(_, n)| n)
+        .sum::<usize>();
+    o.push(
+        "performance.modern_image_formats",
+        Performance,
+        "WebP / AVIF 이미지",
+        count_presence(modern, x.image_formats.values().sum()),
+        (!x.image_formats.is_empty()).then(|| json!(x.image_formats)),
+        Some(
+            "파일 확장자 · <picture> source type 기준. 서버 협상으로 변환되는 경우는 반영되지 않음"
+                .into(),
+        ),
+    );
+    o.push(
+        "performance.img_srcset",
+        Performance,
+        "srcset 이미지",
+        count_presence(x.img_srcset, f.img_total),
+        Some(json!({ "total": f.img_total, "srcset": x.img_srcset })),
+        None,
+    );
+
+    // ===== 전송 =====
+    let v = page.version.as_str();
+    o.push(
+        "transport.http2",
+        Transport,
+        "HTTP/2 이상",
+        Presence::from_bool(v == "HTTP/2.0" || v == "HTTP/3.0"),
+        Some(json!(v)),
+        None,
+    );
+    let alt_svc = header(&page.headers, "alt-svc");
+    o.push(
+        "transport.http3_advertised",
+        Transport,
+        "HTTP/3 광고 (Alt-Svc h3)",
+        Presence::from_bool(alt_svc.as_deref().is_some_and(|a| a.contains("h3"))),
+        alt_svc.map(Value::from),
+        None,
+    );
+    if let Some(tls) = &ext.tls {
+        let label = "TLS 인증서";
+        match tls {
+            Ok(None) => o.push(
+                "transport.tls_certificate",
+                Transport,
+                label,
+                Presence::NotApplicable,
+                None,
+                Some("https 아님".into()),
+            ),
+            Ok(Some(c)) => o.push(
+                "transport.tls_certificate",
+                Transport,
+                label,
+                Presence::Present,
+                Some(json!({
+                    "subject": c.subject, "issuer": c.issuer, "notAfter": c.not_after_text,
+                    "daysRemaining": (c.not_after - ext.now).div_euclid(86_400),
+                })),
+                None,
+            ),
+            Err(e) => o.push(
+                "transport.tls_certificate",
+                Transport,
+                label,
+                Presence::Unknown,
+                None,
+                Some(format!("확인 실패: {e}")),
+            ),
+        }
+    }
+    for variant in &ext.url_variants {
+        let label = match variant.kind {
+            "trailing_slash" => "끝 슬래시 변형 중복 노출",
+            "uppercase" => "대문자 경로 변형 중복 노출",
+            _ => "index.html 변형 중복 노출",
+        };
+        let id = format!("transport.url_variant.{}", variant.kind);
+        match &variant.result {
+            Ok((status, final_url)) => o.push(
+                id,
+                Transport,
+                label,
+                Presence::from_bool((200..300).contains(status) && !same_path(final_url, base)),
+                Some(json!({ "variant": variant.url.as_str(), "statusCode": status, "finalUrl": final_url.as_str() })),
+                None,
+            ),
+            Err(e) => o.push(id, Transport, label, Presence::Unknown, Some(json!({ "variant": variant.url.as_str() })), Some(format!("요청 실패: {e}"))),
+        }
+    }
+
+    // ===== 보안 헤더 =====
+    for (id, name, label) in [
+        ("csp", "content-security-policy", "Content-Security-Policy"),
+        (
+            "x_content_type_options",
+            "x-content-type-options",
+            "X-Content-Type-Options",
+        ),
+        ("x_frame_options", "x-frame-options", "X-Frame-Options"),
+        ("referrer_policy", "referrer-policy", "Referrer-Policy"),
+        (
+            "permissions_policy",
+            "permissions-policy",
+            "Permissions-Policy",
+        ),
+    ] {
+        o.opt(
+            &format!("security.{id}"),
+            Security,
+            label,
+            header(&page.headers, name).as_deref(),
+        );
+    }
+
+    // ===== 크롤링 =====
+    match robots {
+        Ok(r) if !x.same_origin_resources.is_empty() => {
+            let blocked: Vec<&String> = x
+                .same_origin_resources
+                .iter()
+                .filter(|p| !r.is_allowed("Googlebot", p))
+                .collect();
+            o.push(
+                "crawling.robots_blocks_resources",
+                Crawling,
+                "robots.txt 가 CSS/JS 차단",
+                Presence::from_bool(!blocked.is_empty()),
+                (!blocked.is_empty()).then(|| json!(blocked)),
+                Some("Googlebot 기준, 같은 호스트의 script/stylesheet".into()),
+            );
+        }
+        Ok(_) => o.push(
+            "crawling.robots_blocks_resources",
+            Crawling,
+            "robots.txt 가 CSS/JS 차단",
+            Presence::NotApplicable,
+            None,
+            None,
+        ),
+        Err(e) => o.push(
+            "crawling.robots_blocks_resources",
+            Crawling,
+            "robots.txt 가 CSS/JS 차단",
+            Presence::Unknown,
+            None,
+            Some(e.clone()),
+        ),
+    }
+
+    // ===== GEO =====
+    o.opt(
+        "geo.author",
+        Geo,
+        "작성자 (meta / JSON-LD)",
+        x.author.as_deref(),
+    );
+    o.opt(
+        "geo.published_date",
+        Geo,
+        "게시일 (article:published_time / datePublished)",
+        x.published.as_deref(),
+    );
+    o.opt(
+        "geo.modified_date",
+        Geo,
+        "수정일 (article:modified_time / dateModified)",
+        x.modified.as_deref(),
+    );
+    o.opt(
+        "geo.markdown_alternate",
+        Geo,
+        "마크다운 대체 링크 (rel=alternate text/markdown)",
+        x.markdown_alternate.as_deref(),
+    );
+    if let Some(md) = &ext.markdown_version {
+        let (p, n) = file_presence(md);
+        o.push(
+            "geo.markdown_version",
+            Geo,
+            "페이지 .md 버전",
+            p,
+            Some(file_value(md)),
+            n,
+        );
+    }
+
+    // ===== 웹 접근성 =====
+    let a = &f.a11y;
+    o.push(
+        "accessibility.unlabeled_form_controls",
+        Accessibility,
+        "레이블 없는 입력 요소",
+        count_presence(a.unlabeled_controls.len(), a.form_controls),
+        Some(json!({ "total": a.form_controls, "unlabeled": a.unlabeled_controls })),
+        None,
+    );
+    o.push(
+        "accessibility.unnamed_buttons",
+        Accessibility,
+        "이름 없는 버튼",
+        count_presence(a.unnamed_buttons, a.buttons),
+        Some(json!({ "total": a.buttons, "unnamed": a.unnamed_buttons })),
+        None,
+    );
+    o.push(
+        "accessibility.empty_links",
+        Accessibility,
+        "이름(텍스트) 없는 링크",
+        count_presence(a.empty_links, a.links),
+        Some(json!({ "total": a.links, "empty": a.empty_links })),
+        None,
+    );
+    for (id, label, has) in [
+        ("landmark_main", "main 랜드마크", a.has_main),
+        ("landmark_nav", "nav 랜드마크", a.has_nav),
+        ("landmark_header", "header(banner) 랜드마크", a.has_header),
+        (
+            "landmark_footer",
+            "footer(contentinfo) 랜드마크",
+            a.has_footer,
+        ),
+    ] {
+        o.push(
+            format!("accessibility.{id}"),
+            Accessibility,
+            label,
+            Presence::from_bool(has),
+            None,
+            None,
+        );
+    }
+    o.opt(
+        "accessibility.skip_link",
+        Accessibility,
+        "건너뛰기 링크",
+        a.skip_link.as_deref(),
+    );
+    o.push(
+        "accessibility.iframe_title_missing",
+        Accessibility,
+        "title 없는 iframe",
+        count_presence(a.iframes_without_title, a.iframes),
+        Some(json!({ "total": a.iframes, "missing": a.iframes_without_title })),
+        None,
+    );
+    o.push(
+        "accessibility.duplicate_ids",
+        Accessibility,
+        "중복 id",
+        Presence::from_bool(!a.duplicate_ids.is_empty()),
+        (!a.duplicate_ids.is_empty())
+            .then(|| json!(a.duplicate_ids.iter().take(20).collect::<Vec<_>>())),
+        (a.duplicate_ids.len() > 20)
+            .then(|| format!("총 {}개 중 20개만 표시", a.duplicate_ids.len())),
+    );
+    o.push(
+        "accessibility.table_headers_missing",
+        Accessibility,
+        "제목 셀(th) 없는 표",
+        count_presence(a.tables_without_headers, a.tables),
+        Some(json!({ "total": a.tables, "missing": a.tables_without_headers })),
+        None,
+    );
+    o.push(
+        "accessibility.autoplay_media",
+        Accessibility,
+        "자동 재생 미디어",
+        Presence::from_bool(a.autoplay_media > 0),
+        Some(json!(a.autoplay_media)),
+        None,
+    );
+    o.push(
+        "accessibility.positive_tabindex",
+        Accessibility,
+        "양수 tabindex",
+        Presence::from_bool(a.positive_tabindex > 0),
+        Some(json!(a.positive_tabindex)),
+        None,
+    );
+    o.push(
+        "accessibility.obsolete_elements",
+        Accessibility,
+        "폐기된 표현 요소 (marquee·blink·font·center)",
+        Presence::from_bool(a.obsolete_elements > 0),
+        Some(json!(a.obsolete_elements)),
+        None,
+    );
+    o.push(
+        "accessibility.new_window_links",
+        Accessibility,
+        "새 창 링크 (target=_blank)",
+        Presence::from_bool(a.new_window_links > 0),
+        Some(json!(a.new_window_links)),
+        None,
+    );
+    let viewport = f.meta("viewport");
+    o.push(
+        "accessibility.zoom_disabled",
+        Accessibility,
+        "확대 금지 viewport",
+        viewport.map_or(Presence::NotApplicable, |v| {
+            Presence::from_bool(a11y::zoom_disabled(v))
+        }),
+        viewport.map(Value::from),
+        None,
+    );
+}
+
+/// UNIX 초 → 그레고리력 연도 (UTC).
+pub fn year_of(unix: i64) -> i32 {
+    // Howard Hinnant, civil_from_days
+    let z = unix.div_euclid(86_400) + 719_468;
+    let era = z.div_euclid(146_097);
+    let doe = z - era * 146_097;
+    let yoe = (doe - doe / 1_460 + doe / 36_524 - doe / 146_096) / 365;
+    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100);
+    let mp = (5 * doy + 2) / 153;
+    let month = if mp < 10 { mp + 3 } else { mp - 9 };
+    (yoe + era * 400 + i64::from(month <= 2)) as i32
+}
+
+fn list_check(
+    o: &mut Out,
+    id: &str,
+    cat: Category,
+    label: &str,
+    items: &[String],
+    applicable: bool,
+) {
+    o.push(
+        id,
+        cat,
+        label,
+        if applicable {
+            Presence::from_bool(!items.is_empty())
+        } else {
+            Presence::NotApplicable
+        },
+        (!items.is_empty()).then(|| json!(items.iter().take(20).collect::<Vec<_>>())),
+        (items.len() > 20).then(|| format!("총 {}개 중 20개만 표시", items.len())),
+    );
+}
+
+/// 5차 추가: 접근성 심화, 신뢰 정보, 파일·메타, 헤더·리소스, 크롤링·GEO 세부.
+fn more_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
+    use Category::*;
+    let f = i.facts;
+    let x = &f.extra;
+    let a = &f.a11y;
+    let t = &f.trust;
+    let page = i.page;
+    let ext = i.extended;
+    let wk = i.well_known;
+
+    // ===== 웹 접근성 심화 =====
+    list_check(
+        o,
+        "accessibility.vague_link_text",
+        Accessibility,
+        "목적을 알 수 없는 링크 텍스트",
+        &a.vague_link_texts,
+        a.links > 0,
+    );
+    list_check(
+        o,
+        "accessibility.filename_alt",
+        Accessibility,
+        "파일명 형태의 alt",
+        &a.filename_alts,
+        f.img_total > 0,
+    );
+    o.push(
+        "accessibility.long_alt",
+        Accessibility,
+        "125자 초과 alt",
+        count_presence(a.long_alts, f.img_total),
+        Some(json!(a.long_alts)),
+        None,
+    );
+    list_check(
+        o,
+        "accessibility.broken_id_refs",
+        Accessibility,
+        "없는 id 를 가리키는 참조 (for·aria-*)",
+        &a.broken_id_refs,
+        true,
+    );
+    o.push(
+        "accessibility.focusable_aria_hidden",
+        Accessibility,
+        "aria-hidden 안의 초점 가능 요소",
+        Presence::from_bool(a.focusable_aria_hidden > 0),
+        Some(json!(a.focusable_aria_hidden)),
+        None,
+    );
+    o.push(
+        "accessibility.empty_headings",
+        Accessibility,
+        "빈 헤딩",
+        count_presence(a.empty_headings, a.headings),
+        Some(json!({ "total": a.headings, "empty": a.empty_headings })),
+        None,
+    );
+    list_check(
+        o,
+        "accessibility.autocomplete_missing",
+        Accessibility,
+        "개인정보 입력란 autocomplete 누락",
+        &a.autocomplete_missing,
+        a.form_controls > 0,
+    );
+    o.push(
+        "accessibility.html_lang_valid",
+        Accessibility,
+        "html lang 형식 (BCP 47)",
+        f.lang.as_deref().map_or(Presence::NotApplicable, |l| {
+            Presence::from_bool(a11y::valid_lang(l))
+        }),
+        f.lang.as_deref().map(Value::from),
+        None,
+    );
+    o.push(
+        "accessibility.outline_removed",
+        Accessibility,
+        "초점 표시 제거 (outline: none)",
+        Presence::from_bool(a.outline_removed + ext.external_css.as_ref().map_or(0, |c| c.facts.outline_removed) > 0),
+        Some(json!({
+            "inline": a.outline_removed,
+            "external": ext.external_css.as_ref().map(|c| c.facts.outline_removed),
+            "cssFilesChecked": ext.external_css.as_ref().map(|c| c.checked),
+            "hasFocusVisible": a.has_focus_visible || ext.external_css.as_ref().is_some_and(|c| c.facts.has_focus_visible),
+        })),
+        Some("HTML 안 <style>·style 속성 + 외부 CSS 표본 기준. 선택자 문맥(:focus 대체 스타일 여부)은 보지 않음".into()),
+    );
+
+    // ===== 신뢰·법적 정보 =====
+    o.opt(
+        "trust.privacy_policy",
+        Trust,
+        "개인정보처리방침 링크",
+        t.privacy_policy.as_deref(),
+    );
+    o.opt("trust.terms", Trust, "이용약관 링크", t.terms.as_deref());
+    o.push(
+        "trust.phone",
+        Trust,
+        "전화번호 링크 (tel:)",
+        Presence::from_bool(!t.tel.is_empty()),
+        (!t.tel.is_empty()).then(|| json!(t.tel)),
+        None,
+    );
+    o.push(
+        "trust.email",
+        Trust,
+        "이메일 링크 (mailto:)",
+        Presence::from_bool(!t.mailto.is_empty()),
+        (!t.mailto.is_empty()).then(|| json!(t.mailto)),
+        None,
+    );
+    let postal = x
+        .ld_objects
+        .iter()
+        .any(|ob| ob.types.iter().any(|ty| ty == "PostalAddress") || ob.has("address"));
+    o.push(
+        "trust.address",
+        Trust,
+        "주소 (<address> 또는 스키마 address)",
+        Presence::from_bool(t.has_address_element || postal),
+        Some(json!({ "addressElement": t.has_address_element, "schema": postal })),
+        None,
+    );
+    o.push(
+        "trust.social_links",
+        Trust,
+        "SNS 링크",
+        Presence::from_bool(!t.social.is_empty()),
+        (!t.social.is_empty()).then(|| json!(t.social)),
+        None,
+    );
+    o.opt(
+        "trust.business_number",
+        Trust,
+        "사업자등록번호 표기",
+        t.business_number.as_deref(),
+    );
+    o.push(
+        "trust.copyright_year",
+        Trust,
+        "저작권 연도 표기",
+        Presence::from_bool(t.copyright_year.is_some()),
+        t.copyright_year
+            .map(|y| json!({ "year": y, "currentYear": year_of(ext.now) })),
+        None,
+    );
+
+    // ===== 파일·메타 =====
+    o.opt(
+        "meta.bing_site_verification",
+        Meta,
+        "Bing 웹마스터 인증",
+        f.meta("msvalidate.01"),
+    );
+    o.opt(
+        "meta.amphtml",
+        Meta,
+        "AMP 링크 (rel=amphtml)",
+        x.amphtml.as_deref(),
+    );
+    o.push(
+        "meta.app_link_meta",
+        Meta,
+        "앱 연결 메타 (apple-itunes-app·al:*)",
+        Presence::from_bool(!x.app_link_meta.is_empty()),
+        (!x.app_link_meta.is_empty()).then(|| json!(x.app_link_meta)),
+        None,
+    );
+    for (id, label, probe) in [
+        (
+            "meta.apple_app_site_association",
+            "/.well-known/apple-app-site-association",
+            &wk.apple_app_site_association,
+        ),
+        (
+            "meta.assetlinks",
+            "/.well-known/assetlinks.json",
+            &wk.assetlinks,
+        ),
+    ] {
+        let (p, n) = file_presence(probe);
+        o.push(id, Meta, label, p, Some(file_value(probe)), n);
+    }
+    match &ext.manifest {
+        None => {
+            o.push(
+                "meta.manifest_content",
+                Meta,
+                "manifest 내용",
+                Presence::NotApplicable,
+                None,
+                None,
+            );
+            o.push(
+                "meta.manifest_icons_192_512",
+                Meta,
+                "manifest 192·512px 아이콘",
+                Presence::NotApplicable,
+                None,
+                None,
+            );
+        }
+        Some(Err(e)) => {
+            o.push(
+                "meta.manifest_content",
+                Meta,
+                "manifest 내용",
+                Presence::Unknown,
+                None,
+                Some(format!("요청 실패: {e}")),
+            );
+            o.push(
+                "meta.manifest_icons_192_512",
+                Meta,
+                "manifest 192·512px 아이콘",
+                Presence::Unknown,
+                None,
+                None,
+            );
+        }
+        Some(Ok((status, json))) => {
+            let get = |k: &str| {
+                json.as_ref()
+                    .and_then(|j| j.get(k))
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            };
+            let sizes: Vec<String> = json
+                .as_ref()
+                .and_then(|j| j.get("icons"))
+                .and_then(Value::as_array)
+                .map(|icons| {
+                    icons
+                        .iter()
+                        .filter_map(|i| i.get("sizes").and_then(Value::as_str))
+                        .flat_map(|s| s.split_ascii_whitespace().map(str::to_string))
+                        .collect()
+                })
+                .unwrap_or_default();
+            o.push(
+                "meta.manifest_content",
+                Meta,
+                "manifest 내용",
+                Presence::from_bool(json.is_some()),
+                Some(json!({
+                    "statusCode": status, "name": get("name"), "shortName": get("short_name"),
+                    "startUrl": get("start_url"), "display": get("display"), "iconSizes": sizes,
+                })),
+                json.is_none()
+                    .then(|| "JSON 으로 해석할 수 없음".to_string()),
+            );
+            let has = |s: &str| sizes.iter().any(|x| x == s);
+            o.push(
+                "meta.manifest_icons_192_512",
+                Meta,
+                "manifest 192·512px 아이콘",
+                if json.is_some() {
+                    Presence::from_bool(has("192x192") && has("512x512"))
+                } else {
+                    Presence::NotApplicable
+                },
+                None,
+                None,
+            );
+        }
+    }
+    match &ext.favicon_image {
+        None => {}
+        Some(Err(e)) => o.push(
+            "meta.favicon_size",
+            Meta,
+            "favicon 실제 크기",
+            Presence::Unknown,
+            None,
+            Some(format!("요청 실패: {e}")),
+        ),
+        Some(Ok(img)) => {
+            let vector = img
+                .content_type
+                .as_deref()
+                .is_some_and(|c| c.contains("svg"))
+                || img.url.to_ascii_lowercase().ends_with(".svg");
+            let ok = (200..300).contains(&img.status) && (img.width.is_some() || vector);
+            o.push(
+                "meta.favicon_size",
+                Meta,
+                "favicon 실제 크기",
+                Presence::from_bool(ok),
+                Some(json!({ "url": img.url, "statusCode": img.status, "width": img.width, "height": img.height, "vector": vector, "bytes": img.bytes })),
+                (!ok).then(|| "이미지 크기를 읽을 수 없음".to_string()),
+            );
+        }
+    }
+
+    // ===== 응답 헤더·리소스 =====
+    let h = &page.headers;
+    o.opt(
+        "crawling.etag",
+        Crawling,
+        "ETag 헤더",
+        header(h, "etag").as_deref(),
+    );
+    o.opt(
+        "crawling.last_modified",
+        Crawling,
+        "Last-Modified 헤더",
+        header(h, "last-modified").as_deref(),
+    );
+    let vary = header(h, "vary");
+    o.push(
+        "crawling.vary_user_agent",
+        Crawling,
+        "Vary: User-Agent",
+        Presence::from_bool(
+            vary.as_deref()
+                .is_some_and(|v| v.to_ascii_lowercase().contains("user-agent")),
+        ),
+        vary.map(Value::from),
+        None,
+    );
+    o.opt(
+        "security.server_header",
+        Security,
+        "Server 헤더 노출",
+        header(h, "server").as_deref(),
+    );
+    o.opt(
+        "security.x_powered_by",
+        Security,
+        "X-Powered-By 헤더 노출",
+        header(h, "x-powered-by").as_deref(),
+    );
+    let cookies: Vec<Value> = h
+        .get_all("set-cookie")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(|c| {
+            let mut parts = c.split(';');
+            let name = parts.next().unwrap_or_default().split('=').next().unwrap_or_default().trim().to_string();
+            let attrs: Vec<String> = parts.map(|p| p.trim().to_ascii_lowercase()).collect();
+            json!({
+                "name": name,
+                "secure": attrs.iter().any(|a| a == "secure"),
+                "httpOnly": attrs.iter().any(|a| a == "httponly"),
+                "sameSite": attrs.iter().find_map(|a| a.strip_prefix("samesite=").map(str::to_string)),
+            })
+        })
+        .collect();
+    let weak = cookies
+        .iter()
+        .any(|c| c["secure"] == false || c["httpOnly"] == false || c["sameSite"].is_null());
+    o.push(
+        "security.insecure_cookies",
+        Security,
+        "Secure·HttpOnly·SameSite 누락 쿠키",
+        if cookies.is_empty() {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(weak)
+        },
+        (!cookies.is_empty()).then(|| json!(cookies)),
+        None,
+    );
+    if let Some((url, r)) = &ext.static_asset {
+        match r {
+            Ok((status, headers)) => {
+                let cc = header(headers, "cache-control");
+                let max_age = cc.as_deref().and_then(|c| {
+                    c.split(',').find_map(|d| {
+                        d.trim()
+                            .strip_prefix("max-age=")
+                            .and_then(|v| v.parse::<u64>().ok())
+                    })
+                });
+                o.push(
+                    "performance.static_asset_cache",
+                    Performance,
+                    "정적 리소스 Cache-Control",
+                    Presence::from_bool(cc.is_some()),
+                    Some(json!({
+                        "url": url, "statusCode": status, "cacheControl": cc, "maxAge": max_age,
+                        "immutable": cc.as_deref().is_some_and(|c| c.contains("immutable")),
+                    })),
+                    None,
+                );
+            }
+            Err(e) => o.push(
+                "performance.static_asset_cache",
+                Performance,
+                "정적 리소스 Cache-Control",
+                Presence::Unknown,
+                Some(json!({ "url": url })),
+                Some(format!("요청 실패: {e}")),
+            ),
+        }
+    }
+    o.push(
+        "performance.dom_size",
+        Performance,
+        "DOM 크기",
+        Presence::Present,
+        Some(json!({ "elements": x.dom_elements, "maxDepth": x.dom_depth })),
+        None,
+    );
+    o.push(
+        "performance.third_party_scripts",
+        Performance,
+        "서드파티 스크립트 호스트",
+        Presence::from_bool(!x.third_party_script_hosts.is_empty()),
+        (!x.third_party_script_hosts.is_empty()).then(|| json!(x.third_party_script_hosts)),
+        None,
+    );
+
+    // ===== 크롤링 세부 =====
+    let (p, n) = file_presence(&wk.ads_txt);
+    o.push(
+        "crawling.ads_txt",
+        Crawling,
+        "ads.txt",
+        p,
+        Some(file_value(&wk.ads_txt)),
+        n,
+    );
+    if i.robots.exists {
+        let size = i.robots.size.unwrap_or_default();
+        o.push(
+            "crawling.robots_oversize",
+            Crawling,
+            "robots.txt 500KiB 초과",
+            Presence::from_bool(size > 500 * 1024),
+            Some(json!(size)),
+            None,
+        );
+    } else {
+        o.push(
+            "crawling.robots_oversize",
+            Crawling,
+            "robots.txt 500KiB 초과",
+            Presence::NotApplicable,
+            None,
+            None,
+        );
+    }
+    match robots {
+        Ok(r) if i.robots.exists => {
+            let delays: Vec<Value> = r
+                .crawl_delays
+                .iter()
+                .map(|(ua, v)| json!({ "userAgent": ua, "value": v }))
+                .collect();
+            o.push(
+                "crawling.robots_crawl_delay",
+                Crawling,
+                "robots.txt Crawl-delay",
+                Presence::from_bool(!delays.is_empty()),
+                (!delays.is_empty()).then(|| json!(delays)),
+                None,
+            );
+            list_check(
+                o,
+                "crawling.robots_invalid_lines",
+                Crawling,
+                "robots.txt 해석 불가 줄",
+                &r.invalid_lines,
+                true,
+            );
+        }
+        _ => {
+            o.push(
+                "crawling.robots_crawl_delay",
+                Crawling,
+                "robots.txt Crawl-delay",
+                Presence::NotApplicable,
+                None,
+                None,
+            );
+            o.push(
+                "crawling.robots_invalid_lines",
+                Crawling,
+                "robots.txt 해석 불가 줄",
+                Presence::NotApplicable,
+                None,
+                None,
+            );
+        }
+    }
+    if let Some(sm) = pick_sitemap(i.sitemap, &i.sitemap_detail.declared)
+        && !is_gz(sm)
+    {
+        let size = sm.size.unwrap_or_default();
+        let entries = sitemap::summarize(sm.body.as_deref().unwrap_or_default()).entries;
+        o.push(
+            "crawling.sitemap_oversize",
+            Crawling,
+            "sitemap 한도 초과 (50MB 또는 5만 URL)",
+            Presence::from_bool(size > 50 * 1024 * 1024 || entries > 50_000),
+            Some(json!({ "url": sm.url, "bytes": size, "entries": entries })),
+            None,
+        );
+    }
+
+    // ===== GEO 세부 =====
+    o.push(
+        "geo.question_headings",
+        Geo,
+        "질문형 헤딩 (h2~h4)",
+        Presence::from_bool(!x.question_headings.is_empty()),
+        (!x.question_headings.is_empty())
+            .then(|| json!(x.question_headings.iter().take(20).collect::<Vec<_>>())),
+        None,
+    );
+    o.push(
+        "geo.lists",
+        Geo,
+        "목록 (항목 2개 이상 ul/ol, dl)",
+        Presence::from_bool(x.lists + x.definition_lists > 0),
+        Some(json!({ "lists": x.lists, "definitionLists": x.definition_lists })),
+        None,
+    );
+    o.push(
+        "geo.tables",
+        Geo,
+        "표",
+        Presence::from_bool(x.tables > 0),
+        Some(json!(x.tables)),
+        None,
+    );
+    o.push(
+        "geo.noscript_content",
+        Geo,
+        "noscript 대체 콘텐츠",
+        Presence::from_bool(x.noscript_text_len > 0),
+        Some(json!({ "elements": x.noscript_elements, "textLength": x.noscript_text_len })),
+        None,
+    );
+    let speakable = x.ld_objects.iter().any(|ob| ob.has("speakable"));
+    o.push(
+        "structured_data.speakable",
+        StructuredData,
+        "speakable 속성",
+        Presence::from_bool(speakable),
+        None,
+        None,
+    );
+}
+
+/// 같은 값을 가진 페이지 묶음 (2개 이상인 것만).
+fn duplicate_groups<'a>(items: impl Iterator<Item = (&'a str, &'a str)>) -> Vec<Value> {
+    let mut groups: Vec<(&str, Vec<&str>)> = Vec::new();
+    for (value, url) in items {
+        match groups.iter_mut().find(|(v, _)| *v == value) {
+            Some((_, urls)) => urls.push(url),
+            None => groups.push((value, vec![url])),
+        }
+    }
+    groups
+        .into_iter()
+        .filter(|(_, urls)| urls.len() > 1)
+        .map(|(v, urls)| json!({ "value": v, "urls": urls }))
+        .collect()
+}
+
+/// 여러 페이지 표본: 대상 페이지 + 표본 페이지들 사이의 중복·누락.
+fn site_checks(o: &mut Out, i: &Inputs, site: &SiteSample) {
+    use Category::Site;
+    let f = i.facts;
+    let main_url = i.page.final_url.as_str();
+    let ok: Vec<(&str, &SamplePage)> = site
+        .pages
+        .iter()
+        .filter_map(|(u, r)| {
+            r.as_ref()
+                .ok()
+                .filter(|p| (200..300).contains(&p.status))
+                .map(|p| (u.as_str(), p))
+        })
+        .collect();
+    let failed: Vec<Value> = site
+        .pages
+        .iter()
+        .filter_map(|(u, r)| match r {
+            Ok(p) if (200..300).contains(&p.status) => None,
+            Ok(p) => Some(json!({ "url": u, "statusCode": p.status })),
+            Err(e) => Some(json!({ "url": u, "error": e })),
+        })
+        .collect();
+    o.push(
+        "site.pages_sampled",
+        Site,
+        "표본 페이지 수집",
+        if site.pages.is_empty() {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(!ok.is_empty())
+        },
+        Some(json!({
+            "source": site.source,
+            "requested": site.pages.len(),
+            "ok": ok.len(),
+            "urls": site.pages.iter().map(|(u, _)| u).collect::<Vec<_>>(),
+        })),
+        site.pages
+            .is_empty()
+            .then(|| "표본으로 쓸 같은 호스트 URL 이 없음".to_string()),
+    );
+    if site.pages.is_empty() {
+        return;
+    }
+    let na = ok.is_empty();
+    let p = |b: bool| {
+        if na {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(b)
+        }
+    };
+    o.push(
+        "site.failed_pages",
+        Site,
+        "표본 중 2xx 아닌 페이지",
+        Presence::from_bool(!failed.is_empty()),
+        (!failed.is_empty()).then(|| json!(failed)),
+        None,
+    );
+
+    // 대상 페이지 포함 비교
+    let titles = std::iter::once((f.title.as_deref(), main_url))
+        .chain(ok.iter().map(|(u, pg)| (pg.title.as_deref(), *u)));
+    let dup_titles = duplicate_groups(titles.clone().filter_map(|(t, u)| t.map(|t| (t, u))));
+    o.push(
+        "site.duplicate_titles",
+        Site,
+        "페이지 간 중복 title",
+        p(!dup_titles.is_empty()),
+        (!dup_titles.is_empty()).then(|| json!(dup_titles)),
+        Some("대상 페이지 포함".into()),
+    );
+    let descs = std::iter::once((f.meta("description"), main_url))
+        .chain(ok.iter().map(|(u, pg)| (pg.description.as_deref(), *u)));
+    let dup_descs = duplicate_groups(descs.clone().filter_map(|(d, u)| d.map(|d| (d, u))));
+    o.push(
+        "site.duplicate_descriptions",
+        Site,
+        "페이지 간 중복 description",
+        p(!dup_descs.is_empty()),
+        (!dup_descs.is_empty()).then(|| json!(dup_descs)),
+        Some("대상 페이지 포함".into()),
+    );
+
+    let urls_where = |pred: &dyn Fn(&SamplePage) -> bool| -> Vec<&str> {
+        ok.iter()
+            .filter(|(_, pg)| pred(pg))
+            .map(|(u, _)| *u)
+            .collect()
+    };
+    for (id, label, list) in [
+        (
+            "site.missing_titles",
+            "title 없는 페이지",
+            urls_where(&|pg| pg.title.is_none()),
+        ),
+        (
+            "site.missing_descriptions",
+            "description 없는 페이지",
+            urls_where(&|pg| pg.description.is_none()),
+        ),
+        (
+            "site.missing_h1",
+            "h1 없는 페이지",
+            urls_where(&|pg| pg.h1_count == 0),
+        ),
+        (
+            "site.multiple_h1",
+            "h1 이 2개 이상인 페이지",
+            urls_where(&|pg| pg.h1_count > 1),
+        ),
+        (
+            "site.noindex_pages",
+            "noindex 페이지",
+            urls_where(&|pg| pg.noindex),
+        ),
+        (
+            "site.img_alt_missing_pages",
+            "alt 누락 이미지가 있는 페이지",
+            urls_where(&|pg| pg.img_without_alt > 0),
+        ),
+    ] {
+        o.push(
+            id,
+            Site,
+            label,
+            p(!list.is_empty()),
+            Some(json!({ "checked": ok.len(), "urls": list })),
+            None,
+        );
+    }
+    let (imgs, missing) = ok.iter().fold((0, 0), |(t, m), (_, pg)| {
+        (t + pg.img_total, m + pg.img_without_alt)
+    });
+    o.push(
+        "site.img_alt_missing_total",
+        Site,
+        "표본 전체 alt 누락 이미지",
+        if na || imgs == 0 {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(missing > 0)
+        },
+        Some(json!({ "images": imgs, "missingAlt": missing })),
+        None,
+    );
+    let mut lens: Vec<usize> = ok.iter().map(|(_, pg)| pg.body_text_len).collect();
+    lens.sort_unstable();
+    o.push(
+        "site.body_text_lengths",
+        Site,
+        "표본 페이지 정적 body 텍스트 길이",
+        p(lens.iter().any(|l| *l > 0)),
+        (!na).then(|| json!({
+            "min": lens.first(), "median": lens.get(lens.len() / 2), "max": lens.last(),
+            "pages": ok.iter().map(|(u, pg)| json!({ "url": u, "length": pg.body_text_len })).collect::<Vec<_>>(),
+        })),
+        None,
+    );
+    let mut langs: Vec<&str> = std::iter::once(f.lang.as_deref())
+        .chain(ok.iter().map(|(_, pg)| pg.lang.as_deref()))
+        .flatten()
+        .collect();
+    langs.sort_unstable();
+    langs.dedup();
+    o.push(
+        "site.lang_variants",
+        Site,
+        "페이지마다 다른 html lang",
+        p(langs.len() > 1),
+        (!langs.is_empty()).then(|| json!(langs)),
+        Some("다국어 사이트라면 정상일 수 있음".into()),
+    );
+}
+
+fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
+    use Category::*;
+    let ext = i.extended;
+    let base = &i.page.final_url;
+
+    // ===== canonical 대상 =====
+    let (lbl_noindex, lbl_bad) = (
+        "canonical 대상 페이지 noindex",
+        "canonical 대상이 2xx 아님 또는 다른 canonical",
+    );
+    match &ext.canonical_target {
+        None => {
+            o.push(
+                "meta.canonical_target_noindex",
+                Meta,
+                lbl_noindex,
+                Presence::NotApplicable,
+                None,
+                Some("canonical 없음 또는 자기 참조".into()),
+            );
+            o.push(
+                "meta.canonical_target_mismatch",
+                Meta,
+                lbl_bad,
+                Presence::NotApplicable,
+                None,
+                None,
+            );
+        }
+        Some(Err(e)) => {
+            o.push(
+                "meta.canonical_target_noindex",
+                Meta,
+                lbl_noindex,
+                Presence::Unknown,
+                None,
+                Some(format!("요청 실패: {e}")),
+            );
+            o.push(
+                "meta.canonical_target_mismatch",
+                Meta,
+                lbl_bad,
+                Presence::Unknown,
+                None,
+                None,
+            );
+        }
+        Some(Ok(t)) => {
+            let ok = (200..300).contains(&t.status);
+            let own = t.canonical.as_deref();
+            let points_elsewhere =
+                own.is_some_and(|c| Url::parse(c).map_or(true, |cu| !same_url(&cu, &t.final_url)));
+            let value = json!({ "url": t.final_url.as_str(), "statusCode": t.status, "noindex": t.noindex, "canonical": own });
+            o.push(
+                "meta.canonical_target_noindex",
+                Meta,
+                lbl_noindex,
+                Presence::from_bool(t.noindex),
+                Some(value.clone()),
+                None,
+            );
+            o.push(
+                "meta.canonical_target_mismatch",
+                Meta,
+                lbl_bad,
+                Presence::from_bool(!ok || points_elsewhere),
+                Some(value),
+                None,
+            );
+        }
+    }
+
+    // ===== hreflang 상호 참조 =====
+    if ext.hreflang_targets.is_empty() {
+        o.push(
+            "structured_data.hreflang_reciprocal",
+            StructuredData,
+            "hreflang 상호 참조",
+            Presence::NotApplicable,
+            None,
+            None,
+        );
+    } else {
+        let mut all = true;
+        let detail: Vec<Value> = ext
+            .hreflang_targets
+            .iter()
+            .map(|(lang, url, r)| match r {
+                Ok(p) => {
+                    let back = p
+                        .hreflang
+                        .iter()
+                        .any(|(_, h)| Url::parse(h).is_ok_and(|u| same_url(&u, base)));
+                    all &= back && (200..300).contains(&p.status);
+                    json!({ "lang": lang, "url": url, "statusCode": p.status, "linksBack": back })
+                }
+                Err(e) => {
+                    all = false;
+                    json!({ "lang": lang, "url": url, "error": e })
+                }
+            })
+            .collect();
+        o.push(
+            "structured_data.hreflang_reciprocal",
+            StructuredData,
+            "hreflang 상호 참조",
+            Presence::from_bool(all),
+            Some(json!(detail)),
+            Some("각 언어 버전이 이 페이지를 hreflang 으로 되가리키는지".into()),
+        );
+    }
+
+    // ===== 외부 CSS / 폰트 =====
+    let inline = &i.facts.extra.inline_css;
+    if let Some(c) = &ext.external_css {
+        o.push(
+            "performance.external_css",
+            Performance,
+            "외부 CSS 분석",
+            Presence::from_bool(c.total > 0),
+            Some(json!({ "total": c.total, "checked": c.checked, "failed": c.failed, "bytes": c.bytes })),
+            None,
+        );
+    }
+    let faces = inline.font_faces + ext.external_css.as_ref().map_or(0, |c| c.facts.font_faces);
+    let without = inline.font_faces_without_display
+        + ext
+            .external_css
+            .as_ref()
+            .map_or(0, |c| c.facts.font_faces_without_display);
+    o.push(
+        "performance.font_face_without_display",
+        Performance,
+        "font-display 없는 @font-face",
+        count_presence(without, faces),
+        Some(json!({ "fontFaces": faces, "withoutDisplay": without })),
+        None,
+    );
+
+    // ===== 페이지 무게 =====
+    if let Some(w) = &ext.page_weight {
+        o.push(
+            "performance.page_weight",
+            Performance,
+            "페이지 리소스 무게",
+            Presence::Present,
+            Some(json!({
+                "htmlBytes": i.page.body_bytes,
+                "cssBytes": ext.external_css.as_ref().map(|c| c.bytes),
+                "js": { "total": w.js_total, "checked": w.js_checked, "bytes": w.js_bytes },
+                "images": { "total": w.images_total, "checked": w.images_checked, "unknown": w.images_unknown, "bytes": w.image_bytes },
+            })),
+            Some("HTML·CSS·JS 는 압축 해제 기준, 이미지는 Content-Length 기준. 표본 상한이 있어 checked < total 이면 일부만 합산".into()),
+        );
+    }
+}
+
+/// 대상 페이지 HTML·응답 헤더와 무관한 항목 (차단 시에도 유효).
+const PAGE_INDEPENDENT: &[&str] = &[
+    "crawling.sitemap",
+    "crawling.robots_txt",
+    "crawling.robots_sitemap",
+    "crawling.robots_declared",
+    "crawling.robots_allows",
+    "crawling.robots_oversize",
+    "crawling.robots_crawl",
+    "crawling.robots_invalid",
+    "crawling.ads_txt",
+    "transport.https",
+    "transport.http_status",
+    "transport.http_to_https",
+    "transport.redirect",
+    "transport.temporary_redirect",
+    "transport.tls",
+    "transport.security_txt",
+    "transport.http2",
+    "transport.http3",
+    "transport.bot_challenge",
+    "transport.meta_refresh",
+    "transport.js_redirect",
+    "transport.client_redirect",
+    "geo.llms",
+    "geo.ai_txt",
+    "geo.robots_allows",
+    "geo.ua_access",
+    "geo.markdown_version",
+    "meta.favicon_ico_file",
+    "meta.apple_touch_icon_file",
+    "meta.apple_app_site_association",
+    "meta.assetlinks",
+    "site.",
+    "performance.response_time",
+    "performance.compression",
+];
+
+/// 대상 페이지가 차단·오류일 때 `unknown` 으로 바꿔야 하는 항목인지.
+pub fn depends_on_page(id: &str) -> bool {
+    !PAGE_INDEPENDENT.iter().any(|p| id.starts_with(p))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn civil_year() {
+        assert_eq!(year_of(0), 1970);
+        assert_eq!(year_of(1_798_675_200), 2026); // 2026-12-31
+        assert_eq!(year_of(1_798_761_600), 2027); // 2027-01-01
+    }
+}

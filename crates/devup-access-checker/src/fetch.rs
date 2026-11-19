@@ -1,0 +1,544 @@
+//! HTTP 요청과 부속 리소스 probe.
+
+use std::time::{Duration, Instant};
+
+use std::collections::HashMap;
+use std::sync::{Arc, LazyLock, Mutex};
+
+use reqwest::{Client, Method, Response, header::HeaderMap, redirect::Policy};
+use tokio::sync::Semaphore;
+use url::Url;
+
+use crate::Error;
+
+/// 같은 호스트에 동시에 보내는 요청 수 상한 (순간 폭주로 인한 차단·timeout 방지).
+const PER_HOST_CONCURRENCY: usize = 6;
+
+static HOST_LIMITS: LazyLock<Mutex<HashMap<String, Arc<Semaphore>>>> =
+    LazyLock::new(Default::default);
+
+fn host_limit(url: &str) -> Arc<Semaphore> {
+    let host = Url::parse(url)
+        .ok()
+        .and_then(|u| u.host_str().map(str::to_string))
+        .unwrap_or_default();
+    let mut map = HOST_LIMITS.lock().unwrap_or_else(|e| e.into_inner());
+    map.entry(host)
+        .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_CONCURRENCY)))
+        .clone()
+}
+
+/// 호스트별 동시 요청 수를 제한하고, timeout·연결 실패는 한 번 재시도한다.
+async fn send(client: &Client, method: Method, url: &str) -> Result<Response, reqwest::Error> {
+    let limit = host_limit(url);
+    let _permit = limit.acquire_owned().await.ok();
+    let mut retried = false;
+    loop {
+        match client.request(method.clone(), url).send().await {
+            Err(e) if !retried && (e.is_timeout() || e.is_connect()) => {
+                retried = true;
+                tokio::time::sleep(Duration::from_millis(300)).await;
+            }
+            r => return r,
+        }
+    }
+}
+
+pub(crate) async fn send_get(client: &Client, url: &str) -> Result<Response, reqwest::Error> {
+    send(client, Method::GET, url).await
+}
+
+pub(crate) async fn send_head(client: &Client, url: &str) -> Result<Response, reqwest::Error> {
+    send(client, Method::HEAD, url).await
+}
+
+/// 부속 파일 본문은 이 크기까지만 보관한다.
+const MAX_PROBE_BODY: usize = 512 * 1024;
+/// sitemap 은 표준 한도(50MB) 판별을 위해 더 크게 받는다.
+const MAX_SITEMAP_BODY: usize = 51 * 1024 * 1024;
+
+#[derive(Debug, Clone)]
+pub struct Page {
+    pub status: u16,
+    pub final_url: Url,
+    pub headers: HeaderMap,
+    pub body: String,
+    pub elapsed: Duration,
+    /// 압축 해제 전 전송 크기는 알 수 없으므로 본문 바이트 수를 기록한다.
+    pub body_bytes: usize,
+    /// 협상된 HTTP 버전 (예: "HTTP/2.0")
+    pub version: String,
+}
+
+pub fn build_client(user_agent: &str, timeout: Duration) -> Client {
+    Client::builder()
+        .user_agent(user_agent)
+        .timeout(timeout)
+        .redirect(Policy::limited(10))
+        .gzip(true)
+        .brotli(true)
+        .build()
+        .expect("reqwest client build")
+}
+
+fn describe(e: &reqwest::Error) -> String {
+    if e.is_timeout() {
+        "timeout".into()
+    } else if e.is_connect() {
+        format!("connect: {e}")
+    } else if e.is_redirect() {
+        "too many redirects".into()
+    } else {
+        e.to_string()
+    }
+}
+
+pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
+    let started = Instant::now();
+    let res = send_get(client, url.as_str())
+        .await
+        .map_err(|e| Error::Fetch {
+            url: url.to_string(),
+            reason: describe(&e),
+        })?;
+    let status = res.status().as_u16();
+    let final_url = res.url().clone();
+    let headers = res.headers().clone();
+    let version = format!("{:?}", res.version());
+    let body = res.text().await.map_err(|e| Error::Fetch {
+        url: url.to_string(),
+        reason: describe(&e),
+    })?;
+    Ok(Page {
+        status,
+        final_url,
+        headers,
+        body_bytes: body.len(),
+        body,
+        elapsed: started.elapsed(),
+        version,
+    })
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum Expected {
+    Xml,
+    PlainText,
+    Json,
+    /// 이미지 등 바이너리: HTML 이 아니고 본문이 비어 있지 않음
+    Binary,
+}
+
+/// 정적 파일(sitemap.xml, robots.txt, llms.txt …) probe 결과.
+#[derive(Debug, Clone, Default)]
+pub struct FileProbe {
+    pub url: String,
+    pub status_code: Option<u16>,
+    pub final_url: Option<String>,
+    /// 요청 경로와 최종 경로가 다름 (보통 홈으로 우회)
+    pub redirected: bool,
+    pub content_type: Option<String>,
+    /// 본문이 기대 형식과 일치 (HTML 이 아님 등)
+    pub format_valid: bool,
+    /// status 2xx/3xx AND 리다이렉트 우회 없음 AND 형식 일치
+    pub exists: bool,
+    pub body: Option<String>,
+    /// 잘리기 전 본문 바이트 수
+    pub size: Option<usize>,
+    pub error: Option<String>,
+}
+
+pub fn looks_like_html(body: &str) -> bool {
+    let lower = body
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .to_ascii_lowercase();
+    lower.starts_with("<!doctype html")
+        || lower.starts_with("<html")
+        || lower.starts_with("<!doctype>")
+}
+
+fn looks_like_xml(body: &str) -> bool {
+    let lower = body
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .to_ascii_lowercase();
+    ["<?xml", "<urlset", "<sitemapindex", "<rss", "<feed"]
+        .iter()
+        .any(|p| lower.starts_with(p))
+}
+
+fn truncate(mut s: String, max: usize) -> String {
+    if s.len() > max {
+        let mut cut = max;
+        while !s.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        s.truncate(cut);
+    }
+    s
+}
+
+pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileProbe {
+    let mut probe = FileProbe {
+        url: url.to_string(),
+        ..Default::default()
+    };
+    let res = match send_get(client, url.as_str()).await {
+        Ok(r) => r,
+        Err(e) => {
+            probe.error = Some(describe(&e));
+            return probe;
+        }
+    };
+    let status = res.status().as_u16();
+    let final_url = res.url().clone();
+    probe.content_type = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let body = match res.text().await {
+        Ok(b) => b,
+        Err(e) => {
+            probe.status_code = Some(status);
+            probe.error = Some(describe(&e));
+            return probe;
+        }
+    };
+    if let Some(vendor) = crate::signals::bot_challenge(&body) {
+        probe.status_code = Some(status);
+        probe.final_url = Some(final_url.to_string());
+        probe.error = Some(format!("봇 차단 응답({vendor})"));
+        return probe;
+    }
+    probe.redirected = url.path().trim_end_matches('/') != final_url.path().trim_end_matches('/');
+    let ct = probe
+        .content_type
+        .as_deref()
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let head: String = body.chars().take(2048).collect();
+    let is_html = looks_like_html(&head);
+    let gz = url.path().ends_with(".gz") && (ct.contains("gzip") || ct.contains("octet-stream"));
+    probe.format_valid = match expected {
+        Expected::Xml => (gz || ct.contains("xml") || looks_like_xml(&head)) && !is_html,
+        Expected::PlainText => !is_html,
+        Expected::Binary => !is_html && !body.is_empty(),
+        Expected::Json => !is_html && serde_json::from_str::<serde_json::Value>(&body).is_ok(),
+    };
+    // 다른 파일로의 리다이렉트(예: /sitemap.xml → /crawled-sitemap.xml)는 허용하되,
+    // 루트(홈)로 돌려보내는 SPA 폴백은 존재하지 않는 것으로 본다.
+    let to_root = probe.redirected && final_url.path().trim_end_matches('/').is_empty();
+    probe.exists = (200..400).contains(&status) && !to_root && probe.format_valid;
+    probe.status_code = Some(status);
+    probe.final_url = Some(final_url.to_string());
+    probe.size = Some(body.len());
+    let max = if matches!(expected, Expected::Xml) {
+        MAX_SITEMAP_BODY
+    } else {
+        MAX_PROBE_BODY
+    };
+    probe.body = Some(truncate(body, max));
+    probe
+}
+
+/// 링크 접근성 probe 결과.
+#[derive(Debug, Clone, Default)]
+pub struct LinkProbe {
+    /// 절대 URL 로 변환된 대상
+    pub url: Option<String>,
+    pub status_code: Option<u16>,
+    pub final_url: Option<String>,
+    pub error: Option<String>,
+}
+
+impl LinkProbe {
+    pub fn reachable(&self) -> bool {
+        self.status_code.is_some_and(|s| (200..400).contains(&s))
+    }
+}
+
+pub async fn probe_link(client: &Client, raw: &str, base: &Url) -> LinkProbe {
+    let Ok(abs) = base.join(raw) else {
+        return LinkProbe {
+            error: Some("invalid url".into()),
+            ..Default::default()
+        };
+    };
+    if !matches!(abs.scheme(), "http" | "https") {
+        return LinkProbe {
+            url: Some(abs.to_string()),
+            error: Some(format!("non-http scheme: {}", abs.scheme())),
+            ..Default::default()
+        };
+    }
+    match send_get(client, abs.as_str()).await {
+        Ok(res) => LinkProbe {
+            url: Some(abs.to_string()),
+            status_code: Some(res.status().as_u16()),
+            final_url: Some(res.url().to_string()),
+            error: None,
+        },
+        Err(e) => LinkProbe {
+            url: Some(abs.to_string()),
+            error: Some(describe(&e)),
+            ..Default::default()
+        },
+    }
+}
+
+/// 상태 코드 + 본문(최대 64KB). 404 페이지 판별용.
+pub async fn probe_status_body(client: &Client, url: &Url) -> Result<(u16, String), String> {
+    let res = send_get(client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    let status = res.status().as_u16();
+    let mut body = res.text().await.map_err(|e| describe(&e))?;
+    if body.len() > 65_536 {
+        let mut cut = 65_536;
+        while !body.is_char_boundary(cut) {
+            cut -= 1;
+        }
+        body.truncate(cut);
+    }
+    if let Some(vendor) = crate::signals::bot_challenge(&body) {
+        return Err(format!("봇 차단 응답({vendor})"));
+    }
+    Ok((status, body))
+}
+
+/// 상태 코드와 최종 URL 만 확인 (본문 무시).
+pub async fn probe_status(client: &Client, url: &Url) -> Result<(u16, Url), String> {
+    let res = send_get(client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    Ok((res.status().as_u16(), res.url().clone()))
+}
+
+/// 리다이렉트 한 단계.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct Hop {
+    pub url: String,
+    pub status: u16,
+}
+
+/// 자동 리다이렉트를 끄고 최대 `max` 단계까지 직접 따라가며 각 단계를 기록한다.
+/// 마지막 원소가 최종 응답이다.
+pub async fn redirect_chain(
+    ua: &str,
+    timeout: Duration,
+    url: &Url,
+    max: usize,
+) -> Result<Vec<Hop>, String> {
+    let client = Client::builder()
+        .user_agent(ua)
+        .timeout(timeout)
+        .redirect(Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let mut hops = Vec::new();
+    let mut current = url.clone();
+    for _ in 0..=max {
+        let res = send_get(&client, current.as_str())
+            .await
+            .map_err(|e| describe(&e))?;
+        let status = res.status().as_u16();
+        hops.push(Hop {
+            url: current.to_string(),
+            status,
+        });
+        let location = res
+            .headers()
+            .get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string);
+        match location {
+            Some(loc) if (300..400).contains(&status) => {
+                current = current
+                    .join(&loc)
+                    .map_err(|e| format!("invalid Location {loc}: {e}"))?;
+            }
+            _ => return Ok(hops),
+        }
+    }
+    Err(format!("too many redirects (> {max})"))
+}
+
+/// TLS 서버 인증서 요약.
+#[derive(Debug, Clone)]
+pub struct CertInfo {
+    pub subject: String,
+    pub issuer: String,
+    /// 만료 시각 (UNIX 초)
+    pub not_after: i64,
+    /// RFC 3339 표기 만료 시각
+    pub not_after_text: String,
+}
+
+/// 서버 인증서를 받아 만료일 등을 확인한다. http 대상이면 Ok(None).
+pub async fn tls_certificate(
+    ua: &str,
+    timeout: Duration,
+    url: &Url,
+) -> Result<Option<CertInfo>, String> {
+    if url.scheme() != "https" {
+        return Ok(None);
+    }
+    let client = Client::builder()
+        .user_agent(ua)
+        .timeout(timeout)
+        .tls_info(true)
+        .redirect(Policy::none())
+        .build()
+        .map_err(|e| e.to_string())?;
+    let res = send_get(&client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    let Some(der) = res
+        .extensions()
+        .get::<reqwest::tls::TlsInfo>()
+        .and_then(|i| i.peer_certificate())
+        .map(<[u8]>::to_vec)
+    else {
+        return Err("no peer certificate".into());
+    };
+    let (_, cert) = x509_parser::parse_x509_certificate(&der).map_err(|e| e.to_string())?;
+    let not_after = cert.validity().not_after;
+    Ok(Some(CertInfo {
+        subject: cert.subject().to_string(),
+        issuer: cert.issuer().to_string(),
+        not_after: not_after.timestamp(),
+        not_after_text: not_after.to_datetime().to_string(),
+    }))
+}
+
+/// 본문을 최대 `max` 바이트까지 받는다. (status, content-type, bytes, 잘림 여부)
+pub async fn fetch_bytes(
+    client: &Client,
+    url: &Url,
+    max: usize,
+) -> Result<(u16, Option<String>, Vec<u8>, bool), String> {
+    let mut res = send_get(client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    let status = res.status().as_u16();
+    let ct = res
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let mut buf = Vec::new();
+    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() >= max {
+            buf.truncate(max);
+            return Ok((status, ct, buf, true));
+        }
+    }
+    Ok((status, ct, buf, false))
+}
+
+/// sitemap 표본 페이지 요약.
+#[derive(Debug, Clone)]
+pub struct SamplePage {
+    pub status: u16,
+    pub final_url: Url,
+    /// meta robots / googlebot / X-Robots-Tag 중 noindex
+    pub noindex: bool,
+    /// canonical (절대 URL)
+    pub canonical: Option<String>,
+    pub title: Option<String>,
+    pub description: Option<String>,
+    pub lang: Option<String>,
+    pub h1_count: usize,
+    pub img_total: usize,
+    pub img_without_alt: usize,
+    pub body_text_len: usize,
+    /// (hreflang, 절대 URL)
+    pub hreflang: Vec<(String, String)>,
+}
+
+pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String> {
+    let res = send_get(client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    let status = res.status().as_u16();
+    let final_url = res.url().clone();
+    let header_noindex = res
+        .headers()
+        .get_all("x-robots-tag")
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .any(|v| v.to_ascii_lowercase().contains("noindex"));
+    let body = res.text().await.map_err(|e| describe(&e))?;
+    if let Some(vendor) = crate::signals::bot_challenge(&body) {
+        return Err(format!("봇 차단 응답({vendor})"));
+    }
+    let facts = crate::html::extract(&body, &final_url);
+    let facts_base = final_url.clone();
+    let meta_noindex = [facts.meta("robots"), facts.meta("googlebot")]
+        .into_iter()
+        .flatten()
+        .flat_map(|v| v.split(','))
+        .any(|d| matches!(d.trim().to_ascii_lowercase().as_str(), "noindex" | "none"));
+    Ok(SamplePage {
+        status,
+        canonical: facts
+            .canonical
+            .as_deref()
+            .and_then(|c| final_url.join(c).ok())
+            .map(|u| u.to_string()),
+        final_url,
+        noindex: header_noindex || meta_noindex,
+        description: facts.meta("description").map(str::to_string),
+        title: facts.title,
+        lang: facts.lang,
+        h1_count: facts.h1_count,
+        img_total: facts.img_total,
+        img_without_alt: facts.img_without_alt,
+        body_text_len: facts.body_text_len,
+        hreflang: facts
+            .hreflang
+            .iter()
+            .filter_map(|h| {
+                facts_base
+                    .join(&h.href)
+                    .ok()
+                    .map(|u| (h.lang.clone(), u.to_string()))
+            })
+            .collect(),
+    })
+}
+
+/// 상태 코드와 응답 헤더만 확인 (본문 무시).
+pub async fn probe_headers(client: &Client, url: &Url) -> Result<(u16, HeaderMap), String> {
+    let res = send_get(client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    Ok((res.status().as_u16(), res.headers().clone()))
+}
+
+/// HEAD 요청으로 Content-Length 확인. 헤더가 없으면 Ok(None).
+pub async fn head_length(client: &Client, url: &Url) -> Result<(u16, Option<u64>), String> {
+    let res = send_head(client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    let len = res
+        .headers()
+        .get(reqwest::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    Ok((res.status().as_u16(), len))
+}
+
+/// AI 크롤러 UA 요청: (상태, 최종 URL, 챌린지 공급자). 본문은 200KB 까지만 본다.
+pub async fn probe_ua(
+    client: &Client,
+    url: &Url,
+) -> Result<(u16, Url, Option<&'static str>), String> {
+    let (status, _, bytes, _) = fetch_bytes(client, url, 200_000).await?;
+    let challenge = crate::signals::bot_challenge(&String::from_utf8_lossy(&bytes));
+    // fetch_bytes 는 최종 URL 을 돌려주지 않으므로 다시 묻지 않고 요청 URL 을 기록한다
+    Ok((status, url.clone(), challenge))
+}
