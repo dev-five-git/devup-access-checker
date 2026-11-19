@@ -97,6 +97,8 @@ pub struct SitemapDetail {
     pub declared: Vec<FileProbe>,
     /// 샘플 URL 요청 결과
     pub samples: Vec<SampleResult>,
+    /// 표본을 얻지 못한 이유 (예: 하위 sitemap 읽기 실패)
+    pub sample_note: Option<String>,
 }
 
 /// (sitemap 의 URL, 해당 URL 요청 결과)
@@ -480,7 +482,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     o.opt("meta.html_lang", Meta, "html lang", f.lang.as_deref());
     match &f.canonical {
         Some(href) => {
-            let abs = base.join(href).ok();
+            let abs = f.link_base(base).join(href).ok();
             let same = abs.as_ref().is_some_and(|a| {
                 a.as_str().trim_end_matches('/') == base.as_str().trim_end_matches('/')
             });
@@ -545,6 +547,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
         "canonical 호스트 불일치",
         f.canonical.as_deref(),
         base,
+        f.link_base(base),
     );
     o.opt(
         "meta.google_site_verification",
@@ -638,6 +641,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
         "og:url 호스트 불일치",
         f.meta("og:url"),
         base,
+        f.link_base(base),
     );
     for key in ["card", "title", "description", "image"] {
         o.opt(
@@ -1115,7 +1119,8 @@ pub fn build(i: &Inputs) -> Vec<Check> {
             None,
         ),
     }
-    let path = base.path();
+    // robots 규칙은 경로 + 쿼리에 대해 판정한다 (RFC 9309)
+    let path = &base[url::Position::BeforePath..url::Position::AfterQuery];
     let allow_check = |o: &mut Out, id: String, cat: Category, label: String, token: &str| {
         match &robots {
         Ok(r) => o.push(
@@ -1129,28 +1134,74 @@ pub fn build(i: &Inputs) -> Vec<Check> {
         Err(e) => o.push(id, cat, label, Presence::Unknown, None, Some(e.clone())),
     }
     };
-    let declared = &i.sitemap_detail.declared;
+    // robots.txt 가 선언한 sitemap 전체를 본다. 기본 경로와 같은 선언은 기본 경로 probe 결과를 쓰고,
+    // 요청 상한(5개)을 넘어 확인하지 못한 선언은 unchecked 로 남긴다.
+    let declared_raw: Vec<Url> = if i.robots.exists {
+        let origin = base.join("/").expect("origin");
+        let mut v: Vec<Url> = Vec::new();
+        for raw in Robots::parse(i.robots.body.as_deref().unwrap_or_default()).sitemaps {
+            if let Ok(u) = origin.join(&raw)
+                && !v.contains(&u)
+            {
+                v.push(u);
+            }
+        }
+        v
+    } else {
+        Vec::new()
+    };
+    let entries: Vec<(&Url, Option<&FileProbe>)> = declared_raw
+        .iter()
+        .map(|u| {
+            let probe = if i.sitemap.url == u.as_str() {
+                Some(i.sitemap)
+            } else {
+                i.sitemap_detail
+                    .declared
+                    .iter()
+                    .find(|p| p.url == u.as_str())
+            };
+            (u, probe)
+        })
+        .collect();
+    let checked: Vec<&FileProbe> = entries.iter().filter_map(|(_, p)| *p).collect();
+    let unchecked = entries.len() - checked.len();
+    let presence = if entries.is_empty() {
+        Presence::NotApplicable
+    } else if checked.iter().any(|p| p.error.is_none() && !p.exists) {
+        Presence::Missing
+    } else if unchecked > 0 || checked.iter().any(|p| p.error.is_some()) {
+        Presence::Unknown
+    } else {
+        Presence::Present
+    };
     o.push(
         "crawling.robots_declared_sitemaps",
         Crawling,
         "robots.txt 선언 sitemap 접근",
-        if declared.is_empty() {
-            Presence::NotApplicable
-        } else {
-            Presence::from_bool(declared.iter().all(|p| p.exists))
-        },
-        (!declared.is_empty()).then(|| {
+        presence,
+        (!entries.is_empty()).then(|| {
             json!(
-                declared
+                entries
                     .iter()
-                    .map(
-                        |p| json!({ "url": p.url, "statusCode": p.status_code, "exists": p.exists })
-                    )
+                    .map(|(u, p)| match p {
+                        Some(p) => json!({
+                            "url": u.as_str(),
+                            "statusCode": p.status_code,
+                            "exists": p.exists,
+                            "error": p.error,
+                        }),
+                        None => json!({ "url": u.as_str(), "checked": false }),
+                    })
                     .collect::<Vec<_>>()
             )
         }),
-        (!declared.is_empty())
-            .then(|| "기본 경로(/sitemap.xml)와 다른 선언만 별도 요청".to_string()),
+        (unchecked > 0).then(|| {
+            format!(
+                "선언 {}개 중 {unchecked}개는 요청 상한으로 확인하지 않음",
+                entries.len()
+            )
+        }),
     );
     o.push(
         "crawling.feed_link",
@@ -1468,12 +1519,30 @@ pub fn fill_catalog(mut checks: Vec<Check>) -> Vec<Check> {
             });
         }
     }
+    // 항목명·분류는 카탈로그가 기준이다
+    for c in &mut checks {
+        if let Some(pos) = position(&c.id) {
+            let (_, category, label) = CATALOG[pos];
+            c.category = category;
+            if c.label != label {
+                c.label = label.to_string();
+            }
+        }
+    }
     checks.sort_by_key(|c| position(&c.id).unwrap_or(usize::MAX));
     checks
 }
 
-fn host_mismatch(o: &mut Out, id: &str, cat: Category, label: &str, raw: Option<&str>, base: &Url) {
-    let Some(u) = raw.and_then(|r| base.join(r).ok()) else {
+fn host_mismatch(
+    o: &mut Out,
+    id: &str,
+    cat: Category,
+    label: &str,
+    raw: Option<&str>,
+    base: &Url,
+    link_base: &Url,
+) {
+    let Some(u) = raw.and_then(|r| link_base.join(r).ok()) else {
         o.push(id, cat, label, Presence::NotApplicable, None, None);
         return;
     };
@@ -1558,6 +1627,34 @@ fn sitemap_checks(o: &mut Out, i: &Inputs, base: &Url) {
     );
     let samples = &i.sitemap_detail.samples;
     if samples.is_empty() {
+        let note = i
+            .sitemap_detail
+            .sample_note
+            .clone()
+            .unwrap_or_else(|| "sitemap 에서 표본 URL 을 얻지 못함".into());
+        for (id, label) in [
+            (
+                "crawling.sitemap_broken_urls",
+                "sitemap 샘플 URL 중 비정상 응답",
+            ),
+            (
+                "crawling.sitemap_noindex_pages",
+                "sitemap 표본 중 noindex 페이지",
+            ),
+            (
+                "crawling.sitemap_canonical_mismatch",
+                "sitemap 표본 중 canonical 이 다른 URL 인 페이지",
+            ),
+        ] {
+            o.push(
+                id,
+                Crawling,
+                label,
+                Presence::Unknown,
+                None,
+                Some(note.clone()),
+            );
+        }
         return;
     }
     let broken: Vec<Value> = samples
@@ -1575,13 +1672,15 @@ fn sitemap_checks(o: &mut Out, i: &Inputs, base: &Url) {
         Presence::from_bool(!broken.is_empty()),
         Some(json!({ "sampled": samples.len(), "broken": broken })),
         Some(format!(
-            "{}개 URL 표본 요청 (리다이렉트 추적 후 2xx 가 아닌 것)",
-            samples.len()
+            "{}개 URL 표본 요청{} (리다이렉트 추적 후 2xx 가 아닌 것)",
+            samples.len(),
+            if s.is_index {
+                ", sitemap index 의 첫 하위 sitemap 에서"
+            } else {
+                ""
+            }
         )),
     );
-    if s.is_index {
-        return;
-    }
     let pages: Vec<(&String, &SamplePage)> = samples
         .iter()
         .filter_map(|(u, r)| {
@@ -1784,11 +1883,11 @@ fn extended_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
         StructuredData,
         "hreflang 자기 참조",
         if has_hreflang {
-            Presence::from_bool(
-                f.hreflang
-                    .iter()
-                    .any(|h| base.join(&h.href).is_ok_and(|u| same_url(&u, base))),
-            )
+            Presence::from_bool(f.hreflang.iter().any(|h| {
+                f.link_base(base)
+                    .join(&h.href)
+                    .is_ok_and(|u| same_url(&u, base))
+            }))
         } else {
             Presence::NotApplicable
         },

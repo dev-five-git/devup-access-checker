@@ -23,6 +23,10 @@ fn host_limit(url: &str) -> Arc<Semaphore> {
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_default();
     let mut map = HOST_LIMITS.lock().unwrap_or_else(|e| e.into_inner());
+    // 아무도 쓰지 않는 항목은 정리한다 (장시간 실행되는 서비스에서 맵이 무한히 커지지 않도록)
+    if map.len() > 256 {
+        map.retain(|_, s| Arc::strong_count(s) > 1);
+    }
     map.entry(host)
         .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_CONCURRENCY)))
         .clone()
@@ -201,9 +205,13 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
 /// 대상 페이지 본문은 이 크기까지만 받는다 (비정상적으로 큰 응답으로 인한 메모리 폭증 방지).
 pub const MAX_PAGE_BYTES: usize = 15 * 1024 * 1024;
 
-/// Content-Type 의 charset 으로 디코딩한다 (없거나 모르면 UTF-8, BOM 우선).
-fn decode_body(bytes: &[u8], headers: &HeaderMap) -> String {
-    let label = headers
+/// HTML 인코딩 판별 순서를 따라 디코딩한다: BOM → Content-Type charset → 앞 1024 바이트의
+/// `<meta charset>` / `http-equiv` → UTF-8.
+pub(crate) fn decode_body(bytes: &[u8], headers: &HeaderMap) -> String {
+    if let Some((enc, _)) = encoding_rs::Encoding::for_bom(bytes) {
+        return enc.decode(bytes).0.into_owned();
+    }
+    let header_label = headers
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .and_then(|ct| {
@@ -212,11 +220,48 @@ fn decode_body(bytes: &[u8], headers: &HeaderMap) -> String {
                 .find(|(k, _)| k.trim().eq_ignore_ascii_case("charset"))
                 .map(|(_, v)| v.trim().trim_matches('"').to_string())
         });
-    let encoding = label
+    let encoding = header_label
         .and_then(|l| encoding_rs::Encoding::for_label(l.as_bytes()))
+        .or_else(|| sniff_meta_charset(&bytes[..bytes.len().min(1024)]))
         .unwrap_or(encoding_rs::UTF_8);
     encoding.decode(bytes).0.into_owned()
 }
+
+fn sniff_meta_charset(head: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    static RE: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+        regex::bytes::Regex::new(r#"(?i)<meta[^>]*?charset\s*=\s*["']?\s*([a-z0-9_:.\-]+)"#)
+            .unwrap()
+    });
+    let label = RE.captures(head)?.get(1)?.as_bytes();
+    let enc = encoding_rs::Encoding::for_label(label)?;
+    // 명세상 meta 로 UTF-16 을 선언하면 UTF-8 로 본다
+    Some(
+        if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
+            encoding_rs::UTF_8
+        } else {
+            enc
+        },
+    )
+}
+
+/// 본문을 `max` 바이트까지만 받아 디코딩한다. (본문, 잘림 여부)
+async fn read_text(mut res: Response, max: usize) -> Result<(String, bool), reqwest::Error> {
+    let headers = res.headers().clone();
+    let mut buf = Vec::new();
+    let mut truncated = false;
+    while let Some(chunk) = res.chunk().await? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() >= max {
+            buf.truncate(max);
+            truncated = true;
+            break;
+        }
+    }
+    Ok((decode_body(&buf, &headers), truncated))
+}
+
+/// 표본·대상 확인용 페이지 본문 상한.
+const MAX_SAMPLE_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Expected {
@@ -248,14 +293,46 @@ pub struct FileProbe {
     pub error: Option<String>,
 }
 
+/// 본문이 HTML 문서인지. 앞쪽의 BOM·공백·주석·`<?xml ...?>` 선언을 건너뛴 뒤 첫 태그로 판단한다.
 pub fn looks_like_html(body: &str) -> bool {
-    let lower = body
-        .trim_start_matches('\u{feff}')
-        .trim_start()
+    let mut rest = body.trim_start_matches('\u{feff}').trim_start();
+    loop {
+        if let Some(r) = rest.strip_prefix("<!--") {
+            match r.find("-->") {
+                Some(end) => rest = r[end + 3..].trim_start(),
+                None => return false,
+            }
+        } else if rest.starts_with("<?") {
+            match rest.find("?>") {
+                Some(end) => rest = rest[end + 2..].trim_start(),
+                None => return false,
+            }
+        } else {
+            break;
+        }
+    }
+    let head = rest
+        .chars()
+        .take(16)
+        .collect::<String>()
         .to_ascii_lowercase();
-    lower.starts_with("<!doctype html")
-        || lower.starts_with("<html")
-        || lower.starts_with("<!doctype>")
+    [
+        "<!doctype html",
+        "<!doctype>",
+        "<html",
+        "<head",
+        "<body",
+        "<meta",
+        "<title",
+        "<link",
+        "<script",
+    ]
+    .iter()
+    .any(|p| {
+        head.strip_prefix(p).is_some_and(|after| {
+            after.is_empty() || after.starts_with([' ', '>', '\t', '\n', '\r', '/'])
+        })
+    })
 }
 
 fn looks_like_xml(body: &str) -> bool {
@@ -322,7 +399,11 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
         buf.truncate(max);
     }
     let body = decode_body(&buf, &headers);
-    if let Some(vendor) = crate::signals::bot_challenge(&body) {
+    // 텍스트 파일 본문에 차단 공급자 이름이 언급된 경우를 오인하지 않도록 HTML 응답만 본다
+    if let Some(vendor) = looks_like_html(&body)
+        .then(|| crate::signals::bot_challenge(&body))
+        .flatten()
+    {
         probe.status_code = Some(status);
         probe.final_url = Some(final_url.to_string());
         probe.error = Some(format!("봇 차단 응답({vendor})"));
@@ -335,7 +416,7 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
         .unwrap_or_default()
         .to_ascii_lowercase();
     let head: String = body.chars().take(2048).collect();
-    let is_html = looks_like_html(&head);
+    let is_html = looks_like_html(&body);
     let gz = url.path().ends_with(".gz") && (ct.contains("gzip") || ct.contains("octet-stream"));
     probe.format_valid = match expected {
         Expected::Xml => (gz || ct.contains("xml") || looks_like_xml(&head)) && !is_html,
@@ -405,14 +486,7 @@ pub async fn probe_status_body(client: &Client, url: &Url) -> Result<(u16, Strin
         .await
         .map_err(|e| describe(&e))?;
     let status = res.status().as_u16();
-    let mut body = res.text().await.map_err(|e| describe(&e))?;
-    if body.len() > 65_536 {
-        let mut cut = 65_536;
-        while !body.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        body.truncate(cut);
-    }
+    let (body, _) = read_text(res, 65_536).await.map_err(|e| describe(&e))?;
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         return Err(format!("봇 차단 응답({vendor})"));
     }
@@ -543,6 +617,30 @@ pub async fn count_bytes(client: &Client, url: &Url, max: usize) -> Result<usize
     Ok(n)
 }
 
+/// 하위 sitemap 을 받아 URL 목록을 돌려준다. `.xml.gz` (gzip) 도 풀어서 읽는다.
+pub async fn fetch_sitemap_locs(client: &Client, url: &Url) -> Result<Vec<String>, String> {
+    use std::io::Read;
+    let (status, _, bytes, _) = fetch_bytes(client, url, MAX_SITEMAP_BODY).await?;
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}"));
+    }
+    let xml = if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(bytes.as_slice())
+            .take(MAX_SITEMAP_BODY as u64)
+            .read_to_end(&mut out)
+            .map_err(|e| format!("gzip: {e}"))?;
+        out
+    } else {
+        bytes
+    };
+    let text = String::from_utf8_lossy(&xml);
+    if looks_like_html(&text) {
+        return Err("HTML 응답".into());
+    }
+    Ok(crate::sitemap::summarize(&text).locs)
+}
+
 /// sitemap 표본 페이지 요약.
 #[derive(Debug, Clone)]
 pub struct SamplePage {
@@ -575,12 +673,14 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
         .iter()
         .filter_map(|v| v.to_str().ok())
         .any(|v| v.to_ascii_lowercase().contains("noindex"));
-    let body = res.text().await.map_err(|e| describe(&e))?;
+    let (body, _) = read_text(res, MAX_SAMPLE_BYTES)
+        .await
+        .map_err(|e| describe(&e))?;
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         return Err(format!("봇 차단 응답({vendor})"));
     }
     let facts = crate::html::extract(&body, &final_url);
-    let facts_base = final_url.clone();
+    let facts_base = facts.link_base(&final_url).clone();
     let meta_noindex = [facts.meta("robots"), facts.meta("googlebot")]
         .into_iter()
         .flatten()
@@ -591,7 +691,7 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
         canonical: facts
             .canonical
             .as_deref()
-            .and_then(|c| final_url.join(c).ok())
+            .and_then(|c| facts_base.join(c).ok())
             .map(|u| u.to_string()),
         final_url,
         noindex: header_noindex || meta_noindex,
@@ -655,4 +755,53 @@ pub async fn probe_ua(
     }
     let challenge = crate::signals::bot_challenge(&String::from_utf8_lossy(&buf));
     Ok((status, final_url, challenge))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_by_meta_charset_when_header_has_none() {
+        let (bytes, _, _) =
+            encoding_rs::EUC_KR.encode("<html><head><meta charset=\"euc-kr\"><title>한글</title>");
+        let mut h = HeaderMap::new();
+        h.insert(reqwest::header::CONTENT_TYPE, "text/html".parse().unwrap());
+        assert!(decode_body(&bytes, &h).contains("한글"));
+        // http-equiv 형식
+        let (bytes, _, _) = encoding_rs::EUC_KR
+            .encode(r#"<meta http-equiv="Content-Type" content="text/html; charset=EUC-KR">한글"#);
+        assert!(decode_body(&bytes, &h).contains("한글"));
+        // 헤더 charset 이 meta 보다 우선
+        h.insert(
+            reqwest::header::CONTENT_TYPE,
+            "text/html; charset=utf-8".parse().unwrap(),
+        );
+        assert!(decode_body("<meta charset=euc-kr>한글".as_bytes(), &h).contains("한글"));
+    }
+
+    #[test]
+    fn html_detection_skips_prolog_and_comments() {
+        assert!(looks_like_html(
+            "<!-- generated -->
+<!DOCTYPE html><html>"
+        ));
+        assert!(looks_like_html(
+            "<?xml version=\"1.0\"?>
+<!DOCTYPE html PUBLIC>"
+        ));
+        assert!(looks_like_html("  <head><meta charset=utf-8>"));
+        assert!(looks_like_html("<meta name=x>"));
+        assert!(!looks_like_html(
+            "# Title
+
+> <head> 태그 설명"
+        ));
+        assert!(!looks_like_html("<?xml version=\"1.0\"?><urlset>"));
+        assert!(!looks_like_html(
+            "User-agent: *
+Disallow: /"
+        ));
+        assert!(!looks_like_html("<headline>"));
+    }
 }

@@ -15,6 +15,7 @@ fn sel(s: &str) -> Selector {
 static META: LazyLock<Selector> = LazyLock::new(|| sel("meta"));
 static LINK: LazyLock<Selector> = LazyLock::new(|| sel("link[rel]"));
 static TITLE: LazyLock<Selector> = LazyLock::new(|| sel("title"));
+static BASE: LazyLock<Selector> = LazyLock::new(|| sel("base[href]"));
 static HTML: LazyLock<Selector> = LazyLock::new(|| sel("html"));
 static BODY: LazyLock<Selector> = LazyLock::new(|| sel("body"));
 static H1: LazyLock<Selector> = LazyLock::new(|| sel("h1"));
@@ -50,6 +51,8 @@ pub struct JsonLd {
 
 #[derive(Debug, Clone, Default)]
 pub struct PageFacts {
+    /// `<base href>` 로 정해진 문서 기준 URL (없으면 None). 상대 링크는 이것을 기준으로 해석한다.
+    pub document_base: Option<Url>,
     pub lang: Option<String>,
     pub title: Option<String>,
     pub charset: Option<String>,
@@ -93,6 +96,11 @@ pub struct PageFacts {
 }
 
 impl PageFacts {
+    /// 상대 링크 해석 기준: `<base href>` 가 있으면 그것, 없으면 페이지 URL.
+    pub fn link_base<'a>(&'a self, page: &'a Url) -> &'a Url {
+        self.document_base.as_ref().unwrap_or(page)
+    }
+
     /// `name` 우선, 없으면 `property` 에서 찾는다 (og:/twitter: 는 두 방식이 혼용된다).
     pub fn meta(&self, key: &str) -> Option<&str> {
         let key = key.to_ascii_lowercase();
@@ -183,9 +191,17 @@ fn push_unique(list: &mut Vec<String>, s: &str) {
 }
 
 /// HTML 문서에서 사실을 추출한다. `base` 는 내부/외부 링크 구분과 혼합 콘텐츠 판별에 쓴다.
-pub fn extract(html: &str, base: &Url) -> PageFacts {
+pub fn extract(html: &str, page_url: &Url) -> PageFacts {
     let doc = Html::parse_document(html);
+    // 첫 번째 <base href> 만 유효하다 (HTML 명세)
+    let document_base = doc
+        .select(&BASE)
+        .find_map(|b| b.value().attr("href"))
+        .and_then(|h| page_url.join(h.trim()).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"));
+    let base = document_base.as_ref().unwrap_or(page_url);
     let mut f = PageFacts {
+        document_base: document_base.clone(),
         lang: doc
             .select(&HTML)
             .next()
@@ -317,7 +333,7 @@ pub fn extract(html: &str, base: &Url) -> PageFacts {
         let Ok(u) = base.join(href) else { continue };
         match u.scheme() {
             "http" | "https" => {
-                if u.host_str() == base.host_str() {
+                if u.host_str() == page_url.host_str() {
                     f.internal_links += 1;
                 } else {
                     f.external_links += 1;
@@ -327,7 +343,7 @@ pub fn extract(html: &str, base: &Url) -> PageFacts {
         }
     }
 
-    if base.scheme() == "https" {
+    if page_url.scheme() == "https" {
         for el in doc.select(&SUBRESOURCE) {
             let src = attr(&el, "src")
                 .or_else(|| attr(&el, "href"))
@@ -437,5 +453,24 @@ mod tests {
         let html = r#"<html><body><img src="http://a.com/x.png"></body></html>"#;
         let f = extract(html, &Url::parse("http://example.com/").unwrap());
         assert!(f.insecure_subresources.is_empty());
+    }
+
+    #[test]
+    fn base_href_sets_link_base() {
+        let page = Url::parse("https://a.com/ko/about").unwrap();
+        let f = extract(
+            r#"<html><head><base href="/"><link rel="icon" href="favicon.ico"></head><body><a href="x">x</a></body></html>"#,
+            &page,
+        );
+        assert_eq!(f.link_base(&page).as_str(), "https://a.com/");
+        assert_eq!(
+            f.link_base(&page)
+                .join(f.favicon.as_deref().unwrap())
+                .unwrap()
+                .as_str(),
+            "https://a.com/favicon.ico"
+        );
+        let f = extract("<html><head></head></html>", &page);
+        assert_eq!(f.link_base(&page), &page);
     }
 }

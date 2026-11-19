@@ -383,9 +383,14 @@ pub fn extract(doc: &Html, base: &Url) -> ExtraFacts {
             .unwrap_or_default();
         if let Ok(u) = base.join(raw.trim())
             && u.host_str() == base.host_str()
-            && !f.same_origin_resources.iter().any(|x| x == u.path())
+            && !f
+                .same_origin_resources
+                .iter()
+                .any(|x| x == &u[url::Position::BeforePath..url::Position::AfterQuery])
         {
-            f.same_origin_resources.push(u.path().to_string());
+            // robots 규칙은 경로 + 쿼리에 대해 판정한다
+            f.same_origin_resources
+                .push(u[url::Position::BeforePath..url::Position::AfterQuery].to_string());
         }
     }
 

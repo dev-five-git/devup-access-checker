@@ -1030,3 +1030,66 @@ fn readme_lists_every_catalog_id() {
         .collect();
     assert_eq!(listed, catalog);
 }
+
+/// robots.txt 가 기본 경로 sitemap 을 선언했는데 그 파일이 없으면 "선언 sitemap 접근" 은 missing.
+#[tokio::test]
+async fn declared_default_sitemap_missing_is_reported() {
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string(PAGE),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "User-agent: *\nDisallow: /*?sort=\n\nSitemap: {}/sitemap.xml\n",
+            s.uri()
+        )))
+        .mount(&s)
+        .await;
+    let r = Checker::new(Options {
+        check_transport: false,
+        check_ai_user_agents: false,
+        ..Default::default()
+    })
+    .check(&format!("{}/?sort=1", s.uri()))
+    .await
+    .unwrap();
+    assert_eq!(
+        presence(&r, "crawling.robots_declared_sitemaps"),
+        Presence::Missing
+    );
+    // 쿼리까지 포함해 robots 규칙을 판정한다
+    assert_eq!(
+        presence(&r, "crawling.robots_allows.googlebot"),
+        Presence::Missing
+    );
+}
+
+/// 결과 항목명이 카탈로그와 같아야 한다 (분기마다 다른 항목명을 쓰지 않도록).
+#[tokio::test]
+async fn labels_match_catalog() {
+    let s = site().await;
+    for opts in [
+        Options::default(),
+        Options {
+            sitemap_samples: 0,
+            page_samples: 0,
+            check_links: false,
+            ..Default::default()
+        },
+    ] {
+        let r = Checker::new(opts).check(&s.uri()).await.unwrap();
+        for (c, (id, cat, label)) in r.checks.iter().zip(devup_access_checker::CATALOG) {
+            assert_eq!(
+                (c.id.as_str(), c.category, c.label.as_str()),
+                (*id, *cat, *label)
+            );
+        }
+    }
+}

@@ -186,7 +186,7 @@ impl Checker {
             }
             let one = |raw: Option<String>| {
                 let probe = &probe;
-                let base = &base;
+                let base = facts.link_base(&base);
                 async move {
                     match raw {
                         Some(r) => Some(fetch::probe_link(probe, &r, base).await),
@@ -317,31 +317,32 @@ impl Checker {
             let summary = checks::pick_sitemap(&sitemap, &declared)
                 .filter(|sm| !checks::is_gz(sm))
                 .map(|sm| sitemap::summarize(sm.body.as_deref().unwrap_or_default()));
-            // sitemap 점검용 표본 (index 면 하위 sitemap 들)
-            let sitemap_sample_urls: Vec<String> = match &summary {
-                Some(s) if opts.sitemap_samples > 0 => {
-                    s.locs.iter().take(opts.sitemap_samples).cloned().collect()
-                }
-                _ => Vec::new(),
-            };
-            // 여러 페이지 표본: index 면 첫 하위 sitemap 의 URL 을 쓴다
+            // 페이지 URL 목록: index 면 첫 하위 sitemap 의 URL 을 쓴다
+            let mut sample_note: Option<String> =
+                (opts.sitemap_samples == 0).then(|| "점검하지 않음 (옵션으로 생략)".to_string());
             let page_locs: Vec<String> = match &summary {
-                Some(s) if s.is_index && opts.page_samples > 0 => {
+                Some(s) if s.is_index && (opts.sitemap_samples > 0 || opts.page_samples > 0) => {
                     match s.locs.first().and_then(|u| Url::parse(u).ok()) {
-                        Some(child) => {
-                            let p = fetch::probe_file(&probe, &child, Xml).await;
-                            if p.exists && !checks::is_gz(&p) {
-                                sitemap::summarize(p.body.as_deref().unwrap_or_default()).locs
-                            } else {
+                        Some(child) => match fetch::fetch_sitemap_locs(&probe, &child).await {
+                            Ok(locs) => locs,
+                            Err(e) => {
+                                sample_note =
+                                    Some(format!("첫 하위 sitemap({child}) 읽기 실패: {e}"));
                                 Vec::new()
                             }
-                        }
+                        },
                         None => Vec::new(),
                     }
                 }
                 Some(s) => s.locs.clone(),
                 None => Vec::new(),
             };
+            // sitemap 점검용 표본: sitemap 에 실린 페이지 앞에서부터
+            let sitemap_sample_urls: Vec<String> = page_locs
+                .iter()
+                .take(opts.sitemap_samples)
+                .cloned()
+                .collect();
             let (page_urls, from_sitemap, from_links) = if opts.page_samples > 0 {
                 pick_page_samples(
                     &page_locs,
@@ -387,7 +388,11 @@ impl Checker {
             (
                 sitemap,
                 robots,
-                checks::SitemapDetail { declared, samples },
+                checks::SitemapDetail {
+                    declared,
+                    samples,
+                    sample_note,
+                },
                 site,
             )
         };
@@ -437,7 +442,7 @@ impl Checker {
         };
         let og_fut = async {
             let raw = facts.meta("og:image").filter(|_| opts.check_links)?;
-            let Ok(url) = base.join(raw) else {
+            let Ok(url) = facts.link_base(&base).join(raw) else {
                 return Some(Err(format!("invalid url: {raw}")));
             };
             Some(fetch::fetch_bytes(&probe, &url, 8 * 1024 * 1024).await.map(
@@ -482,7 +487,7 @@ impl Checker {
         };
         let manifest_fut = async {
             let raw = facts.manifest.as_deref().filter(|_| opts.check_links)?;
-            let url = base.join(raw).ok()?;
+            let url = facts.link_base(&base).join(raw).ok()?;
             Some(fetch::fetch_bytes(&probe, &url, 1024 * 1024).await.map(
                 |(status, _, bytes, _)| {
                     (
@@ -496,7 +501,11 @@ impl Checker {
             if !opts.check_links {
                 return None;
             }
-            let url = match facts.favicon.as_deref().and_then(|f| base.join(f).ok()) {
+            let url = match facts
+                .favicon
+                .as_deref()
+                .and_then(|f| facts.link_base(&base).join(f).ok())
+            {
                 Some(u) => u,
                 None => favicon_url.clone(),
             };
@@ -522,7 +531,10 @@ impl Checker {
         };
         // canonical 대상 / hreflang 대상 / 외부 CSS / 페이지 무게
         let canonical_fut = async {
-            let c = facts.canonical.as_deref().and_then(|c| base.join(c).ok())?;
+            let c = facts
+                .canonical
+                .as_deref()
+                .and_then(|c| facts.link_base(&base).join(c).ok())?;
             if c.as_str().trim_end_matches('/') == base.as_str().trim_end_matches('/') {
                 return None;
             }
@@ -532,7 +544,13 @@ impl Checker {
             let targets: Vec<(String, Url)> = facts
                 .hreflang
                 .iter()
-                .filter_map(|h| base.join(&h.href).ok().map(|u| (h.lang.clone(), u)))
+                .filter_map(|h| {
+                    facts
+                        .link_base(&base)
+                        .join(&h.href)
+                        .ok()
+                        .map(|u| (h.lang.clone(), u))
+                })
                 .filter(|(_, u)| {
                     u.as_str().trim_end_matches('/') != base.as_str().trim_end_matches('/')
                 })

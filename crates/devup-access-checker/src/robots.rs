@@ -128,10 +128,39 @@ impl Robots {
     }
 }
 
+/// 비교 전에 양쪽을 같은 형태로 맞춘다: 비 ASCII 는 퍼센트 인코딩, `%xx` 는 대문자.
+fn normalize(s: &str) -> String {
+    let bytes = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < bytes.len() {
+        let b = bytes[i];
+        if b == b'%'
+            && i + 2 < bytes.len()
+            && bytes[i + 1].is_ascii_hexdigit()
+            && bytes[i + 2].is_ascii_hexdigit()
+        {
+            out.push('%');
+            out.push(bytes[i + 1].to_ascii_uppercase() as char);
+            out.push(bytes[i + 2].to_ascii_uppercase() as char);
+            i += 3;
+        } else if b >= 0x80 {
+            out.push_str(&format!("%{b:02X}"));
+            i += 1;
+        } else {
+            out.push(b as char);
+            i += 1;
+        }
+    }
+    out
+}
+
 fn pattern_matches(pattern: &str, path: &str) -> bool {
+    let pattern = normalize(pattern);
+    let path = normalize(path);
     let (body, anchored) = match pattern.strip_suffix('$') {
         Some(b) => (b, true),
-        None => (pattern, false),
+        None => (pattern.as_str(), false),
     };
     let mut re = String::from("^");
     for (i, part) in body.split('*').enumerate() {
@@ -143,7 +172,7 @@ fn pattern_matches(pattern: &str, path: &str) -> bool {
     if anchored {
         re.push('$');
     }
-    Regex::new(&re).is_ok_and(|r| r.is_match(path))
+    Regex::new(&re).is_ok_and(|r| r.is_match(&path))
 }
 
 #[cfg(test)]
@@ -203,5 +232,21 @@ Sitemap: https://example.com/sitemap.xml # main
     #[test]
     fn empty_robots_allows_all() {
         assert!(Robots::parse("").is_allowed("GPTBot", "/"));
+    }
+
+    #[test]
+    fn matches_query_and_non_ascii_paths() {
+        let r = Robots::parse(
+            "User-agent: *
+Disallow: /*?sort=
+Disallow: /검색
+Disallow: /a%2fb
+",
+        );
+        assert!(!r.is_allowed("Googlebot", "/list?sort=price"));
+        assert!(r.is_allowed("Googlebot", "/list?page=2"));
+        // url 크레이트가 만든 경로(퍼센트 인코딩)와 원문 패턴이 맞아야 한다
+        assert!(!r.is_allowed("Googlebot", "/%EA%B2%80%EC%83%89"));
+        assert!(!r.is_allowed("Googlebot", "/a%2Fb"));
     }
 }
