@@ -102,15 +102,14 @@ fn print_text(out: &mut impl Write, r: &Report, only_missing: bool) -> std::io::
 
 /// 점검을 실행하고 결과를 쓴다. 반환값은 종료 코드 (0 성공, 2 일부 URL 실패).
 async fn run(cli: Cli, out: &mut impl Write, err: &mut impl Write) -> std::io::Result<u8> {
-    let checker = Checker::new(Options {
-        page_timeout: Duration::from_secs(cli.timeout),
-        check_links: !cli.no_links,
-        check_ai_user_agents: !cli.no_ai_ua,
-        check_transport: !cli.no_transport,
-        page_samples: cli.pages,
-        check_resources: !cli.no_resources,
-        ..Default::default()
-    });
+    let mut opts = Options::default();
+    opts.page_timeout = Duration::from_secs(cli.timeout);
+    opts.check_links = !cli.no_links;
+    opts.check_ai_user_agents = !cli.no_ai_ua;
+    opts.check_transport = !cli.no_transport;
+    opts.page_samples = cli.pages;
+    opts.check_resources = !cli.no_resources;
+    let checker = Checker::new(opts);
 
     // 여러 URL 은 동시에 점검하고, 출력은 입력 순서를 따른다
     let results = futures::future::join_all(cli.urls.iter().map(|u| checker.check(u))).await;

@@ -42,15 +42,18 @@ URL을 여러 개 주면 동시에 점검하고, 결과는 입력 순서대로 �
 ## 라이브러리
 
 ```rust
-use devup_access_checker::{Checker, Presence};
+use devup_access_checker::{Checker, Options, Presence};
 
-let report = Checker::default().check("devfive.kr").await?;
+let mut opts = Options::default();
+opts.check_ai_user_agents = false; // 필요한 옵션만 바꾼다
+
+let report = Checker::new(opts).check("devfive.kr").await?;
 if report.get("geo.llms_txt").map(|c| c.presence) == Some(Presence::Missing) { /* ... */ }
 ```
 
 `report.checks`는 항상 [`CATALOG`](crates/devup-access-checker/src/catalog.rs)와 같은 id를 같은 순서로 담습니다. 점검을 실행하지 않고 전체 항목 목록(id, 분류, 항목명)이 필요하면 `devup_access_checker::CATALOG`를 쓰면 됩니다. 항목 id는 버전이 바뀌어도 의미가 유지됩니다.
 
-`html::extract`, `robots::Robots`, `sitemap::summarize`, `signals::*`는 네트워크 없이 단독으로도 쓸 수 있습니다.
+공개 API는 `Checker`, `Options`, `Report`, `Check`, `Presence`, `Category`, `Error`, `CATALOG`, `normalize_url`입니다. 파싱·요청 모듈은 내부 구현이라 공개하지 않습니다. `Options`·`Report`·`Check`·`Category`·`Error`는 `#[non_exhaustive]`라서, 이후 버전에서 필드나 분류가 추가되어도 호환성이 깨지지 않습니다. `Options`는 `Options::default()`로 만든 뒤 필드를 바꿔 씁니다.
 
 ## 대상 페이지가 차단되거나 리다이렉트될 때
 

@@ -2,6 +2,13 @@ use devup_access_checker::{Checker, Options, Presence, Report};
 use wiremock::matchers::{header_regex, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// 기본 옵션에서 일부만 바꾼다 (`Options` 는 `#[non_exhaustive]`).
+fn opts(f: impl FnOnce(&mut Options)) -> Options {
+    let mut o = Options::default();
+    f(&mut o);
+    o
+}
+
 const PAGE: &str = r#"<!doctype html><html lang="ko"><head>
 <meta charset="utf-8"><title>데브파이브 홈페이지 테스트</title>
 <meta name="description" content="설명">
@@ -68,10 +75,9 @@ fn presence(r: &Report, id: &str) -> Presence {
 #[tokio::test]
 async fn reports_presence_for_mock_site() {
     let s = site().await;
-    let r = Checker::new(Options {
-        check_transport: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_transport = false;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -232,11 +238,10 @@ async fn redirects_declared_sitemaps_and_site_files() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        sitemap_samples: 10,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.sitemap_samples = 10;
+    }))
     .check(&uri)
     .await
     .unwrap();
@@ -414,10 +419,9 @@ async fn extended_network_checks() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+    }))
     .check(&format!("{uri}/ko/"))
     .await
     .unwrap();
@@ -584,10 +588,9 @@ async fn files_headers_and_trust_checks() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -678,11 +681,10 @@ async fn multi_page_sample() {
         .respond_with(html(r#"<html lang="ko"><head><title>Extra</title><meta name="description" content="e"></head><body><p>no heading</p></body></html>"#))
         .mount(&s).await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+    }))
     .check(&uri)
     .await
     .unwrap();
@@ -791,12 +793,11 @@ async fn canonical_hreflang_css_and_weight() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        page_samples: 0,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.page_samples = 0;
+    }))
     .check(&format!("{uri}/ko/"))
     .await
     .unwrap();
@@ -863,12 +864,11 @@ async fn follows_meta_refresh() {
     Mock::given(method("GET")).and(path("/portal/main"))
         .respond_with(html(r#"<html lang="ko"><head><title>메인</title><meta name="description" content="d"></head><body><h1>메인</h1></body></html>"#))
         .mount(&s).await;
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        page_samples: 0,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.page_samples = 0;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -897,12 +897,11 @@ async fn blocked_page_makes_page_checks_unknown() {
         .respond_with(ResponseTemplate::new(200).set_body_string("User-agent: *\nAllow: /\n"))
         .mount(&s)
         .await;
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        page_samples: 0,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.page_samples = 0;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -962,12 +961,11 @@ async fn follows_js_redirect_and_sitemap_file_redirect() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        page_samples: 0,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.page_samples = 0;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -994,15 +992,14 @@ async fn id_set_is_fixed_regardless_of_options() {
         .check(&s.uri())
         .await
         .unwrap();
-    let off = Checker::new(Options {
-        check_links: false,
-        check_ai_user_agents: false,
-        check_transport: false,
-        check_resources: false,
-        page_samples: 0,
-        sitemap_samples: 0,
-        ..Default::default()
-    })
+    let off = Checker::new(opts(|o| {
+        o.check_links = false;
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.check_resources = false;
+        o.page_samples = 0;
+        o.sitemap_samples = 0;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -1052,11 +1049,10 @@ async fn declared_default_sitemap_missing_is_reported() {
         )))
         .mount(&s)
         .await;
-    let r = Checker::new(Options {
-        check_transport: false,
-        check_ai_user_agents: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_transport = false;
+        o.check_ai_user_agents = false;
+    }))
     .check(&format!("{}/?sort=1", s.uri()))
     .await
     .unwrap();
@@ -1077,12 +1073,11 @@ async fn labels_match_catalog() {
     let s = site().await;
     for opts in [
         Options::default(),
-        Options {
-            sitemap_samples: 0,
-            page_samples: 0,
-            check_links: false,
-            ..Default::default()
-        },
+        opts(|o| {
+            o.sitemap_samples = 0;
+            o.page_samples = 0;
+            o.check_links = false;
+        }),
     ] {
         let r = Checker::new(opts).check(&s.uri()).await.unwrap();
         for (c, (id, cat, label)) in r.checks.iter().zip(devup_access_checker::CATALOG) {
@@ -1101,12 +1096,11 @@ fn html_page(body: &str) -> ResponseTemplate {
 }
 
 fn quick() -> Options {
-    Options {
-        check_transport: false,
-        check_ai_user_agents: false,
-        check_resources: false,
-        ..Default::default()
-    }
+    opts(|o| {
+        o.check_transport = false;
+        o.check_ai_user_agents = false;
+        o.check_resources = false;
+    })
 }
 
 /// meta refresh 를 따라가지 않거나 중단하는 경우들.
@@ -1230,11 +1224,10 @@ async fn invalid_og_image_url() {
         ))
         .mount(&s)
         .await;
-    let r = Checker::new(Options {
-        check_transport: false,
-        check_ai_user_agents: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_transport = false;
+        o.check_ai_user_agents = false;
+    }))
     .check(&s.uri())
     .await
     .unwrap();

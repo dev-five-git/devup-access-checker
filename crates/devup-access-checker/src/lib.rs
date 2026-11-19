@@ -12,19 +12,19 @@
 //! # Ok(()) }
 //! ```
 
-pub mod a11y;
-pub mod catalog;
-pub mod checks;
-pub mod css;
-pub mod extra;
-pub mod fetch;
-pub mod html;
-pub mod llms;
-pub mod model;
-pub mod robots;
-pub mod signals;
-pub mod sitemap;
-pub mod trust;
+mod a11y;
+mod catalog;
+mod checks;
+mod css;
+mod extra;
+mod fetch;
+mod html;
+mod llms;
+mod model;
+mod robots;
+mod signals;
+mod sitemap;
+mod trust;
 
 use std::time::{Duration, Instant};
 
@@ -49,7 +49,9 @@ const MAX_IMAGES: usize = 80;
 /// 존재하지 않을 경로 (404 페이지 확인용)
 const NOT_FOUND_PATH: &str = "/__devup_access_checker_404_probe__";
 
+/// 대상 페이지 자체를 점검할 수 없을 때의 오류. 부속 요청 실패는 오류가 아니라 `unknown` 항목으로 보고한다.
 #[derive(Debug, thiserror::Error)]
+#[non_exhaustive]
 pub enum Error {
     #[error("invalid url: {0}")]
     InvalidUrl(String),
@@ -57,7 +59,15 @@ pub enum Error {
     Fetch { url: String, reason: String },
 }
 
+/// 점검 옵션. `Options::default()` 로 만든 뒤 필요한 필드만 바꿔 쓴다.
+///
+/// ```
+/// let mut opts = devup_access_checker::Options::default();
+/// opts.check_ai_user_agents = false;
+/// opts.page_samples = 0;
+/// ```
 #[derive(Debug, Clone)]
+#[non_exhaustive]
 pub struct Options {
     pub user_agent: String,
     /// 대상 페이지 요청 timeout
@@ -115,14 +125,19 @@ pub fn normalize_url(input: &str) -> Result<Url, Error> {
     Ok(url)
 }
 
+/// URL 점검기.
 #[derive(Debug, Clone, Default)]
 pub struct Checker {
-    pub options: Options,
+    options: Options,
 }
 
 impl Checker {
     pub fn new(options: Options) -> Self {
         Self { options }
+    }
+
+    pub fn options(&self) -> &Options {
+        &self.options
     }
 
     pub async fn check(&self, input: &str) -> Result<Report, Error> {
@@ -979,6 +994,15 @@ mod tests {
         let b: Vec<String> = ["b", "a", "c"].map(String::from).to_vec();
         assert_eq!(sample(&a, 2), sample(&b, 2));
         assert_eq!(sample(&a, 10).len(), 3);
+    }
+
+    #[test]
+    fn checker_keeps_options() {
+        let o = Options {
+            page_samples: 3,
+            ..Default::default()
+        };
+        assert_eq!(Checker::new(o).options().page_samples, 3);
     }
 
     #[test]
