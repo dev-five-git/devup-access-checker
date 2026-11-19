@@ -321,7 +321,8 @@ fn file_value(p: &FileProbe) -> Value {
         "redirected": p.redirected,
         "contentType": p.content_type,
         "formatValid": p.format_valid,
-        "bytes": p.body.as_ref().map(String::len),
+        "bytes": p.size,
+        "truncated": p.truncated,
     })
 }
 

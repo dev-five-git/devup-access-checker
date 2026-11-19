@@ -15,8 +15,8 @@ readme = "../../README.md"
 [dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli"] }
 x509-parser = "0.18"
-imagesize = "0.14"
-scraper = "0.24"
+imagesize = "0.15"
+scraper = "0.29"
 regex = "1"
 url = "2"
 serde.workspace = true

@@ -549,23 +549,22 @@ impl Checker {
                 return None;
             }
             let urls = &facts.extra.stylesheet_urls;
-            let results: Vec<Result<String, String>> =
-                stream::iter(urls.iter().take(MAX_CSS_FILES))
-                    .map(|u| {
-                        let probe = &probe;
-                        async move {
-                            let url = Url::parse(u).map_err(|e| e.to_string())?;
-                            let (status, _, bytes, _) =
-                                fetch::fetch_bytes(probe, &url, 5 * 1024 * 1024).await?;
-                            if !(200..300).contains(&status) {
-                                return Err(format!("HTTP {status}"));
-                            }
-                            Ok(String::from_utf8_lossy(&bytes).into_owned())
+            let results: Vec<Result<String, String>> = stream::iter(sample(urls, MAX_CSS_FILES))
+                .map(|u| {
+                    let probe = &probe;
+                    async move {
+                        let url = Url::parse(u).map_err(|e| e.to_string())?;
+                        let (status, _, bytes, _) =
+                            fetch::fetch_bytes(probe, &url, 5 * 1024 * 1024).await?;
+                        if !(200..300).contains(&status) {
+                            return Err(format!("HTTP {status}"));
                         }
-                    })
-                    .buffer_unordered(8)
-                    .collect()
-                    .await;
+                        Ok(String::from_utf8_lossy(&bytes).into_owned())
+                    }
+                })
+                .buffer_unordered(8)
+                .collect()
+                .await;
             let mut out = checks::ExternalCss {
                 total: urls.len(),
                 ..Default::default()
@@ -587,22 +586,19 @@ impl Checker {
                 return None;
             }
             let x = &facts.extra;
-            let js: Vec<usize> = stream::iter(x.script_urls.iter().take(MAX_JS_FILES))
+            let js: Vec<usize> = stream::iter(sample(&x.script_urls, MAX_JS_FILES))
                 .map(|u| {
                     let probe = &probe;
                     async move {
                         let url = Url::parse(u).ok()?;
-                        fetch::fetch_bytes(probe, &url, 20 * 1024 * 1024)
-                            .await
-                            .ok()
-                            .map(|(_, _, b, _)| b.len())
+                        fetch::count_bytes(probe, &url, 20 * 1024 * 1024).await.ok()
                     }
                 })
                 .buffer_unordered(8)
                 .filter_map(|x| async move { x })
                 .collect()
                 .await;
-            let imgs: Vec<Option<u64>> = stream::iter(x.image_urls.iter().take(MAX_IMAGES))
+            let imgs: Vec<Option<u64>> = stream::iter(sample(&x.image_urls, MAX_IMAGES))
                 .map(|u| {
                     let probe = &probe;
                     async move {
@@ -723,6 +719,15 @@ impl Checker {
             checks,
         })
     }
+}
+
+/// 분석할 표본을 고른다. 페이지가 순서를 바꿔 내려줘도 같은 결과가 나오도록 정렬·중복 제거 후 앞에서 `n` 개.
+fn sample(urls: &[String], n: usize) -> Vec<&String> {
+    let mut v: Vec<&String> = urls.iter().collect();
+    v.sort();
+    v.dedup();
+    v.truncate(n);
+    v
 }
 
 /// www 가 붙어 있으면 뗀, 없으면 붙인 루트 URL. IP·localhost·단일 레이블 호스트는 None.
@@ -940,5 +945,13 @@ mod tests {
         );
         assert_eq!(v("http://127.0.0.1:8080/"), None);
         assert_eq!(v("http://localhost/"), None);
+    }
+
+    #[test]
+    fn sample_is_order_independent() {
+        let a: Vec<String> = ["c", "a", "b", "a"].map(String::from).to_vec();
+        let b: Vec<String> = ["b", "a", "c"].map(String::from).to_vec();
+        assert_eq!(sample(&a, 2), sample(&b, 2));
+        assert_eq!(sample(&a, 10).len(), 3);
     }
 }

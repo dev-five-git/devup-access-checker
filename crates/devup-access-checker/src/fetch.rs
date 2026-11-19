@@ -89,6 +89,8 @@ pub(crate) async fn send_head(client: &Client, url: &str) -> Result<Response, re
 
 /// 부속 파일 본문은 이 크기까지만 보관한다.
 const MAX_PROBE_BODY: usize = 512 * 1024;
+/// 보관 상한을 넘은 본문은 크기만 이 값까지 센다.
+const COUNT_LIMIT: usize = 64 * 1024 * 1024;
 /// sitemap 은 표준 한도(50MB) 판별을 위해 더 크게 받는다.
 const MAX_SITEMAP_BODY: usize = 51 * 1024 * 1024;
 
@@ -239,8 +241,10 @@ pub struct FileProbe {
     /// status 2xx/3xx AND 리다이렉트 우회 없음 AND 형식 일치
     pub exists: bool,
     pub body: Option<String>,
-    /// 잘리기 전 본문 바이트 수
+    /// 본문 바이트 수 (보관 상한과 무관한 전체 크기, 최대 64MB 까지 셈)
     pub size: Option<usize>,
+    /// 본문이 상한을 넘어 앞부분만 보관함
+    pub truncated: bool,
     pub error: Option<String>,
 }
 
@@ -264,17 +268,6 @@ fn looks_like_xml(body: &str) -> bool {
         .any(|p| lower.starts_with(p))
 }
 
-fn truncate(mut s: String, max: usize) -> String {
-    if s.len() > max {
-        let mut cut = max;
-        while !s.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        s.truncate(cut);
-    }
-    s
-}
-
 pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileProbe {
     let mut probe = FileProbe {
         url: url.to_string(),
@@ -294,14 +287,41 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let body = match res.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            probe.status_code = Some(status);
-            probe.error = Some(describe(&e));
-            return probe;
-        }
+    let max = if matches!(expected, Expected::Xml) {
+        MAX_SITEMAP_BODY
+    } else {
+        MAX_PROBE_BODY
     };
+    // 상한까지만 보관하고, 그 뒤는 크기만 센다 (COUNT_LIMIT 에서 멈춤).
+    let headers = res.headers().clone();
+    let declared_len = res.content_length();
+    let mut res = res;
+    let mut buf = Vec::new();
+    let mut read = 0usize;
+    loop {
+        match res.chunk().await {
+            Ok(Some(chunk)) => {
+                read += chunk.len();
+                if buf.len() <= max {
+                    buf.extend_from_slice(&chunk);
+                }
+                if read >= COUNT_LIMIT {
+                    break;
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                probe.status_code = Some(status);
+                probe.error = Some(describe(&e));
+                return probe;
+            }
+        }
+    }
+    if buf.len() > max {
+        probe.truncated = true;
+        buf.truncate(max);
+    }
+    let body = decode_body(&buf, &headers);
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         probe.status_code = Some(status);
         probe.final_url = Some(final_url.to_string());
@@ -329,13 +349,8 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
     probe.exists = (200..400).contains(&status) && !to_root && probe.format_valid;
     probe.status_code = Some(status);
     probe.final_url = Some(final_url.to_string());
-    probe.size = Some(body.len());
-    let max = if matches!(expected, Expected::Xml) {
-        MAX_SITEMAP_BODY
-    } else {
-        MAX_PROBE_BODY
-    };
-    probe.body = Some(truncate(body, max));
+    probe.size = Some(declared_len.map_or(read, |n| (n as usize).max(read)));
+    probe.body = Some(body);
     probe
 }
 
@@ -508,6 +523,24 @@ pub async fn fetch_bytes(
         }
     }
     Ok((status, ct, buf, false))
+}
+
+/// 본문을 보관하지 않고 바이트 수만 센다 (`max` 에서 멈춤). 2xx 가 아니면 오류.
+pub async fn count_bytes(client: &Client, url: &Url, max: usize) -> Result<usize, String> {
+    let mut res = send_get(client, url.as_str())
+        .await
+        .map_err(|e| describe(&e))?;
+    if !res.status().is_success() {
+        return Err(format!("HTTP {}", res.status().as_u16()));
+    }
+    let mut n = 0;
+    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+        n += chunk.len();
+        if n >= max {
+            return Ok(max);
+        }
+    }
+    Ok(n)
 }
 
 /// sitemap 표본 페이지 요약.
