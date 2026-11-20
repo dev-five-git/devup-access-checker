@@ -13,18 +13,29 @@
 //! ```
 
 mod a11y;
+mod aria;
 mod catalog;
 mod checks;
 mod css;
 mod extra;
 mod fetch;
+mod google;
 mod html;
 mod llms;
 mod model;
+mod more;
+mod naver_ld;
+mod quality;
 mod robots;
+mod rules;
+mod schema_types;
+mod search;
+mod sec;
 mod signals;
 mod sitemap;
+mod spec;
 mod trust;
+mod vulnjs;
 
 use std::time::{Duration, Instant};
 
@@ -76,7 +87,7 @@ pub struct Options {
     pub probe_timeout: Duration,
     /// favicon / og:image 등 링크 접근 가능 여부 검증
     pub check_links: bool,
-    /// AI 크롤러 User-Agent 로 페이지를 요청해 응답 확인
+    /// AI·검색 크롤러(Yeti·Bingbot) User-Agent 로 페이지를 요청해 응답 확인
     pub check_ai_user_agents: bool,
     /// http:// 버전 리다이렉트, 리다이렉트 체인, www 변형, 압축 여부 확인
     pub check_transport: bool,
@@ -88,6 +99,8 @@ pub struct Options {
     pub check_resources: bool,
     /// 여러 페이지 표본 크롤링 페이지 수 (0 = 생략). sitemap 을 우선 쓰고 부족하면 내부 링크로 채운다.
     pub page_samples: usize,
+    /// IndexNow 키. 지정하면 `https://호스트/{키}.txt` 키 파일을 확인한다 (키 파일 이름은 비밀이라 찾아낼 수 없음)
+    pub indexnow_key: Option<String>,
 }
 
 impl Default for Options {
@@ -103,6 +116,7 @@ impl Default for Options {
             internal_link_samples: 10,
             page_samples: 10,
             check_resources: true,
+            indexnow_key: None,
         }
     }
 }
@@ -231,7 +245,7 @@ impl Checker {
 
         let transport_fut = async {
             if !opts.check_transport {
-                return (None, None, None, None);
+                return (None, None, None, None, Vec::new());
             }
             let mut http_url = base.clone();
             // 대상은 항상 http(s) 이므로 스킴 변경은 실패하지 않는다
@@ -245,22 +259,52 @@ impl Checker {
                 fetch::probe_status(&quick, &http_url).await
             };
             let enc_fut = probe_encoding(&opts.user_agent, opts.probe_timeout, &base);
-            let chain_fut =
-                fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, &target, 10);
+            let chain_fut = async {
+                let chain =
+                    fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, &target, 10).await;
+                // 최종 호스트가 아닌 경유 호스트의 robots.txt (최대 3곳)
+                let mut hosts: Vec<Url> = Vec::new();
+                for h in chain.iter().flatten() {
+                    if let Ok(u) = Url::parse(&h.url)
+                        && u.host_str() != base.host_str()
+                        && !hosts.iter().any(|x| x.host_str() == u.host_str())
+                        && hosts.len() < 3
+                    {
+                        hosts.push(u.join("/robots.txt").expect("join path"));
+                    }
+                }
+                let robots = join_all(hosts.iter().map(|u| {
+                    let probe = &probe;
+                    async move {
+                        let host = u.host_str().unwrap_or_default().to_string();
+                        (
+                            host,
+                            fetch::probe_file(probe, u, fetch::Expected::PlainText).await,
+                        )
+                    }
+                }))
+                .await;
+                (chain, robots)
+            };
             let variant_fut = probe_host_variant(&probe, host_variant(&base));
-            let (h, e, c, v) = tokio::join!(http_fut, enc_fut, chain_fut, variant_fut);
-            (Some(h), Some(e), Some(c), v)
+            let (h, e, (c, r), v) = tokio::join!(http_fut, enc_fut, chain_fut, variant_fut);
+            (Some(h), Some(e), Some(c), v, r)
         };
 
         let ai_fut = async {
             if !opts.check_ai_user_agents {
                 return Vec::new();
             }
-            join_all(checks::AI_USER_AGENTS.iter().map(|(id, ua)| {
-                let c = fetch::build_client(ua, opts.probe_timeout);
-                let base = &base;
-                async move { (*id, fetch::probe_ua(&c, base).await) }
-            }))
+            join_all(
+                checks::AI_USER_AGENTS
+                    .iter()
+                    .chain(checks::SEARCH_USER_AGENTS)
+                    .map(|(id, ua)| {
+                        let c = fetch::build_client(ua, opts.probe_timeout);
+                        let base = &base;
+                        async move { (*id, fetch::probe_ua(&c, base).await) }
+                    }),
+            )
             .await
         };
 
@@ -278,6 +322,8 @@ impl Checker {
             "/.well-known/apple-app-site-association",
             "/.well-known/assetlinks.json",
             "/ads.txt",
+            "/.well-known/ard.json",
+            "/.well-known/ai-catalog.json",
         ]
         .map(at);
         let [
@@ -294,6 +340,8 @@ impl Checker {
             aasa_url,
             assetlinks_url,
             ads_url,
+            ard_url,
+            ai_catalog_url,
         ] = &urls;
         use fetch::Expected::{Binary, Json, PlainText, Xml};
 
@@ -422,6 +470,8 @@ impl Checker {
                 fetch::probe_file(&probe, assetlinks_url, Json),
                 fetch::probe_file(&probe, ads_url, PlainText),
                 fetch::probe_file(&probe, &md_url, PlainText),
+                fetch::probe_file(&probe, ard_url, Json),
+                fetch::probe_file(&probe, ai_catalog_url, Json),
             )
         };
 
@@ -605,41 +655,234 @@ impl Checker {
                 return None;
             }
             let x = &facts.extra;
-            let js: Vec<usize> = stream::iter(sample(&x.script_urls, MAX_JS_FILES))
+            let scripts: Vec<(String, Result<fetch::ResourceSample, String>)> = stream::iter(
+                sample(&x.script_urls, MAX_JS_FILES)
+                    .into_iter()
+                    .filter_map(|u| Url::parse(u).ok().map(|url| (u, url))),
+            )
+            .map(|(u, url)| {
+                let probe = &probe;
+                async move {
+                    let r =
+                        fetch::sample_resource(probe, &url, 20 * 1024 * 1024, 1024 * 1024).await;
+                    (u.clone(), r)
+                }
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+            let js: Vec<(String, usize)> = scripts
+                .iter()
+                .filter_map(|(u, r)| {
+                    r.as_ref()
+                        .ok()
+                        .filter(|s| (200..300).contains(&s.status))
+                        .map(|s| (u.clone(), s.bytes))
+                })
+                .collect();
+            let imgs: Vec<(String, Option<u64>)> = stream::iter(sample(&x.image_urls, MAX_IMAGES))
                 .map(|u| {
                     let probe = &probe;
                     async move {
                         let url = Url::parse(u).ok()?;
-                        fetch::count_bytes(probe, &url, 20 * 1024 * 1024).await.ok()
+                        let len = fetch::head_length(probe, &url)
+                            .await
+                            .ok()
+                            .and_then(|(_, len)| len);
+                        Some((u.clone(), len))
                     }
                 })
                 .buffer_unordered(8)
                 .filter_map(|x| async move { x })
                 .collect()
                 .await;
-            let imgs: Vec<Option<u64>> = stream::iter(sample(&x.image_urls, MAX_IMAGES))
-                .map(|u| {
-                    let probe = &probe;
-                    async move {
-                        let url = Url::parse(u).ok()?;
-                        fetch::head_length(probe, &url)
-                            .await
-                            .ok()
-                            .and_then(|(_, len)| len)
-                    }
-                })
-                .buffer_unordered(8)
-                .collect()
-                .await;
+            // 크기를 알아낸 이미지
+            let sized: Vec<(String, u64)> = imgs
+                .iter()
+                .filter_map(|(u, l)| l.map(|l| (u.clone(), l)))
+                .collect();
             Some(checks::PageWeight {
                 js_total: x.script_urls.len(),
                 js_checked: js.len(),
-                js_bytes: js.iter().sum(),
+                js_bytes: js.iter().map(|(_, n)| n).sum(),
                 images_total: x.image_urls.len(),
                 images_checked: imgs.len(),
-                images_unknown: imgs.iter().filter(|l| l.is_none()).count(),
-                image_bytes: imgs.iter().flatten().sum(),
+                images_unknown: imgs.iter().filter(|(_, l)| l.is_none()).count(),
+                image_bytes: imgs.iter().filter_map(|(_, l)| *l).sum(),
+                large_scripts: checks::largest(
+                    js.iter().map(|(u, n)| (u.clone(), *n as u64)),
+                    checks::LARGE_SCRIPT_BYTES,
+                ),
+                large_images: checks::largest(sized.iter().cloned(), checks::LARGE_IMAGE_BYTES),
+                scripts,
+                large_gifs: checks::largest(
+                    sized.iter().filter(|(u, _)| is_gif(u)).cloned(),
+                    checks::LARGE_GIF_BYTES,
+                ),
             })
+        };
+
+        // 검색엔진 가이드: 피드 본문, Bing 인증 파일, 없는 경로 리다이렉트, IndexNow 키 파일
+        let search_fut = async {
+            let feed = async {
+                let url = facts
+                    .feeds
+                    .first()
+                    .and_then(|f| facts.link_base(&base).join(f).ok())
+                    .filter(|_| opts.check_links)?;
+                Some(fetch::probe_file(&probe, &url, Xml).await)
+            };
+            let bing_url = at("/BingSiteAuth.xml");
+            let bing = fetch::probe_file(&probe, &bing_url, Xml);
+            let not_found_chain = async {
+                if !opts.check_transport {
+                    return None;
+                }
+                Some(
+                    fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, not_found_url, 5)
+                        .await,
+                )
+            };
+            let indexnow = async {
+                let key = opts.indexnow_key.as_deref()?.trim().to_string();
+                let valid = (8..=128).contains(&key.len())
+                    && key.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-');
+                if !valid {
+                    return Some((key, None));
+                }
+                let url = at(&format!("/{key}.txt"));
+                Some((key, Some(fetch::probe_file(&probe, &url, PlainText).await)))
+            };
+            let llms_subpath = async {
+                let path = base.path();
+                let dir = &path[..=path.rfind('/').unwrap_or(0)];
+                if dir == "/" {
+                    return None;
+                }
+                Some(fetch::probe_file(&probe, &at(&format!("{dir}llms.txt")), PlainText).await)
+            };
+            let card_url = at("/.well-known/agent-card.json");
+            let agent_card = fetch::probe_file(&probe, &card_url, Json);
+            let robots_chain = async {
+                if !opts.check_transport {
+                    return None;
+                }
+                Some(
+                    fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, robots_url, 6)
+                        .await,
+                )
+            };
+            let change_password = async {
+                let url = at("/.well-known/change-password");
+                Some(fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, &url, 0).await)
+            };
+            let conditional = async {
+                let etag = page.headers.get("etag").and_then(|v| v.to_str().ok());
+                let lm = page
+                    .headers
+                    .get("last-modified")
+                    .and_then(|v| v.to_str().ok());
+                if etag.is_none() && lm.is_none() {
+                    return None;
+                }
+                Some(fetch::conditional_status(&probe, &base, etag, lm).await)
+            };
+            let asset_encodings = async {
+                if !opts.check_resources {
+                    return Vec::new();
+                }
+                let urls: Vec<(&String, Url)> = facts
+                    .extra
+                    .stylesheet_urls
+                    .iter()
+                    .chain(&facts.extra.script_urls)
+                    .filter_map(|u| Url::parse(u).ok().map(|url| (u, url)))
+                    .take(5)
+                    .collect();
+                join_all(urls.into_iter().map(|(u, url)| async move {
+                    let r = fetch::raw_encoding(&opts.user_agent, opts.probe_timeout, &url).await;
+                    (u.clone(), r)
+                }))
+                .await
+            };
+            let statement = async {
+                if !opts.check_links {
+                    return None;
+                }
+                let raw = facts.aria.statement_links.first()?;
+                let u = facts.link_base(&base).join(raw).ok()?;
+                Some((u.to_string(), fetch::probe_status_body(&probe, &u).await))
+            };
+            let mobile_alt = async {
+                if !opts.check_links {
+                    return None;
+                }
+                let raw = facts.google.mobile_alternate.as_deref()?;
+                let u = facts.link_base(&base).join(raw).ok()?;
+                Some((u.to_string(), fetch::probe_page(&probe, &u).await))
+            };
+            let cors = async {
+                if !opts.check_transport {
+                    return None;
+                }
+                Some(fetch::cors_probe(&probe, &base, checks::CORS_PROBE_ORIGIN).await)
+            };
+            let http_first_hop = async {
+                if !opts.check_transport {
+                    return None;
+                }
+                let mut http = base.clone();
+                let _ = http.set_scheme("http");
+                Some(
+                    fetch::first_hop(
+                        &opts.user_agent,
+                        opts.probe_timeout.min(Duration::from_secs(5)),
+                        &http,
+                    )
+                    .await,
+                )
+            };
+            let apple_touch = async {
+                if !opts.check_links {
+                    return None;
+                }
+                let raw = facts.apple_touch_icon.as_deref()?;
+                let u = facts.link_base(&base).join(raw).ok()?;
+                Some(image_info(&probe, &u).await)
+            };
+            let gpc_url = at("/.well-known/gpc.json");
+            let gpc = fetch::probe_file(&probe, &gpc_url, Json);
+            let (
+                (feed, bing, not_found_chain, indexnow),
+                (llms_subpath, agent_card, robots_chain),
+                (change_password, gpc, conditional, asset_encodings),
+                (statement, mobile_alternate, cors, http_first_hop, apple_touch_image),
+            ) = tokio::join!(
+                async { tokio::join!(feed, bing, not_found_chain, indexnow) },
+                async { tokio::join!(llms_subpath, agent_card, robots_chain) },
+                async { tokio::join!(change_password, gpc, conditional, asset_encodings) },
+                async { tokio::join!(statement, mobile_alt, cors, http_first_hop, apple_touch) },
+            );
+            checks::SearchProbes {
+                llms_subpath,
+                agent_card: Some(agent_card),
+                change_password,
+                gpc: Some(gpc),
+                conditional,
+                asset_encodings,
+                statement,
+                mobile_alternate,
+                cors,
+                http_first_hop,
+                apple_touch_image,
+                manifest_icon: None,
+                robots_chain,
+                feed,
+                bing_site_auth: Some(bing),
+                not_found_chain,
+                chain_robots: Vec::new(),
+                indexnow,
+            }
         };
 
         // ── 모든 독립 작업을 한 번에 ──
@@ -657,14 +900,17 @@ impl Checker {
                 assetlinks,
                 ads_txt,
                 markdown_version,
+                ard,
+                ai_catalog,
             ),
             not_found,
             links,
-            (http_version, encoding, redirect_chain, host_variant),
+            (http_version, encoding, redirect_chain, host_variant, chain_robots),
             ai_ua,
             (tls, url_variants, og_image, internal_samples),
             (manifest, favicon_image, static_asset),
             (canonical_target, hreflang_targets, external_css, page_weight),
+            mut search,
         ) = tokio::join!(
             sitemap_chain,
             files_fut,
@@ -675,7 +921,20 @@ impl Checker {
             async { tokio::join!(tls_fut, variants_fut, og_fut, internal_fut) },
             async { tokio::join!(manifest_fut, favicon_fut, asset_fut) },
             async { tokio::join!(canonical_fut, hreflang_fut, css_fut, weight_fut) },
+            search_fut,
         );
+        search.chain_robots = chain_robots;
+        // manifest 에서 가장 크게 선언된 아이콘의 실제 크기 (manifest 를 받은 뒤라 따로 요청)
+        if let Some(Ok((_, Some(json)))) = &manifest
+            && let Some(manifest_url) = facts
+                .manifest
+                .as_deref()
+                .and_then(|m| facts.link_base(&base).join(m).ok())
+            && let Some((declared, src)) = largest_icon(json)
+            && let Ok(u) = manifest_url.join(&src)
+        {
+            search.manifest_icon = Some((declared, image_info(&probe, &u).await));
+        }
         let well_known = checks::WellKnown {
             favicon_ico,
             apple_touch_icon,
@@ -684,6 +943,8 @@ impl Checker {
             apple_app_site_association,
             assetlinks,
             ads_txt,
+            ard,
+            ai_catalog,
         };
 
         let extended = checks::Extended {
@@ -699,6 +960,7 @@ impl Checker {
             manifest,
             favicon_image,
             static_asset,
+            search,
             now: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)
@@ -740,6 +1002,44 @@ impl Checker {
     }
 }
 
+/// 이미지를 받아 크기를 읽는다.
+async fn image_info(probe: &reqwest::Client, url: &Url) -> Result<checks::ImageInfo, String> {
+    fetch::fetch_bytes(probe, url, 2 * 1024 * 1024).await.map(
+        |(status, content_type, bytes, truncated)| {
+            let size = imagesize::blob_size(&bytes).ok();
+            checks::ImageInfo {
+                url: url.to_string(),
+                status,
+                content_type,
+                bytes: bytes.len(),
+                truncated,
+                width: size.map(|s| s.width),
+                height: size.map(|s| s.height),
+            }
+        },
+    )
+}
+
+/// manifest icons 중 가장 크게 선언된 것의 ("WxH", src).
+fn largest_icon(json: &serde_json::Value) -> Option<(String, String)> {
+    json.get("icons")?
+        .as_array()?
+        .iter()
+        .filter_map(|i| {
+            let src = i.get("src")?.as_str()?.to_string();
+            let size = i
+                .get("sizes")?
+                .as_str()?
+                .split_ascii_whitespace()
+                .next()?
+                .to_ascii_lowercase();
+            let (w, h) = size.split_once('x')?;
+            Some((w.parse::<u64>().ok()? * h.parse::<u64>().ok()?, size, src))
+        })
+        .max_by_key(|(area, _, _)| *area)
+        .map(|(_, size, src)| (size, src))
+}
+
 /// www 변형 호스트를 요청해 본다. 변형이 없으면(IP·단일 레이블 호스트) None.
 async fn probe_host_variant(
     probe: &reqwest::Client,
@@ -760,6 +1060,15 @@ fn tls_result(
         ("https", None) => Err("no peer certificate".to_string()),
         _ => Ok(None),
     }
+}
+
+/// URL 경로가 .gif 로 끝나는지 (쿼리·조각 제외).
+fn is_gif(url: &str) -> bool {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .ends_with(".gif")
 }
 
 /// 분석할 표본을 고른다. 페이지가 순서를 바꿔 내려줘도 같은 결과가 나오도록 정렬·중복 제거 후 앞에서 `n` 개.
@@ -881,13 +1190,13 @@ async fn probe_encoding(ua: &str, timeout: Duration, url: &Url) -> Result<Option
         .gzip(false)
         .brotli(false)
         .build()
-        .map_err(|e| e.to_string())?;
+        .expect("http client");
     let res = client
         .get(url.as_str())
         .header(reqwest::header::ACCEPT_ENCODING, "gzip, br")
         .send()
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(fetch::describe_owned)?;
     Ok(res
         .headers()
         .get(reqwest::header::CONTENT_ENCODING)
@@ -997,6 +1306,12 @@ mod tests {
     }
 
     #[test]
+    fn gif_detection_ignores_query() {
+        assert!(is_gif("https://a.com/x.GIF?v=1"));
+        assert!(!is_gif("https://a.com/x.png#gif"));
+    }
+
+    #[test]
     fn checker_keeps_options() {
         let o = Options {
             page_samples: 3,
@@ -1035,5 +1350,23 @@ mod tests {
         let links: Vec<String> = (0..5).map(|i| format!("https://a.com/l{i}")).collect();
         let (urls, s, l) = pick_page_samples(&locs, &links, &base, 2);
         assert_eq!((urls.len(), s, l), (2, 2, 0));
+    }
+
+    #[tokio::test]
+    async fn probe_encoding_reports_header_or_error() {
+        use wiremock::{Mock, MockServer, ResponseTemplate, matchers::method};
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .respond_with(ResponseTemplate::new(200).insert_header("content-encoding", "br"))
+            .mount(&s)
+            .await;
+        let url = Url::parse(&s.uri()).unwrap();
+        let t = Duration::from_secs(5);
+        assert_eq!(
+            probe_encoding("t", t, &url).await.unwrap().as_deref(),
+            Some("br")
+        );
+        let closed = Url::parse("http://127.0.0.1:9/").unwrap();
+        assert!(probe_encoding("t", t, &closed).await.is_err());
     }
 }

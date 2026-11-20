@@ -162,6 +162,11 @@ pub fn parse_refresh(content: &str) -> Option<(f64, String)> {
     (!url.is_empty()).then_some((delay, url))
 }
 
+/// meta refresh 의 지연 초 (URL 유무와 무관). 같은 페이지를 주기적으로 새로 고치는 `content="30"` 도 포함한다.
+pub fn refresh_delay(content: &str) -> Option<f64> {
+    content.split([';', ',']).next()?.trim().parse().ok()
+}
+
 // ===== 정보통신접근성 품질인증 마크 =====
 // 발급기관 사이트에 요청을 보내지 않는다. 대상 페이지 HTML 안의 링크/이미지 속성만 읽는다.
 
@@ -372,5 +377,12 @@ mod tests {
         let big = format!("{}cf-chl location.href = '/x'", "a".repeat(200_001));
         assert_eq!(bot_challenge(&big), None);
         assert_eq!(js_redirect(&big), None);
+    }
+
+    #[test]
+    fn refresh_delay_without_url() {
+        assert_eq!(refresh_delay("30"), Some(30.0));
+        assert_eq!(refresh_delay("5; url=/x"), Some(5.0));
+        assert_eq!(refresh_delay("soon"), None);
     }
 }

@@ -83,6 +83,11 @@ fn is_dns_error(e: &reqwest::Error) -> bool {
     false
 }
 
+/// `map_err` 에 함수로 넘기기 위한 [`describe`].
+pub(crate) fn describe_owned(e: reqwest::Error) -> String {
+    describe(&e)
+}
+
 pub(crate) async fn send_get(client: &Client, url: &str) -> Result<Response, reqwest::Error> {
     send(client, Method::GET, url).await
 }
@@ -113,6 +118,10 @@ pub struct Page {
     pub version: String,
     /// 최종 연결의 TLS 서버 인증서 (https 일 때)
     pub certificate: Option<CertInfo>,
+    /// 원문이 UTF-8 BOM(EF BB BF)으로 시작
+    pub bom: bool,
+    /// 원문에서 첫 `<meta … charset` 이 끝나는 바이트 위치
+    pub meta_charset_offset: Option<usize>,
 }
 
 /// 대상 페이지용 클라이언트: 인증서 확인을 위해 TLS 정보를 함께 받는다.
@@ -166,7 +175,7 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
     let certificate = res
         .extensions()
         .get::<reqwest::tls::TlsInfo>()
-        .and_then(|i| i.peer_certificate())
+        .and_then(reqwest::tls::TlsInfo::peer_certificate)
         .and_then(parse_certificate);
     let declared_len = res.content_length();
     let mut res = res;
@@ -189,7 +198,11 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
         buf.len()
     };
     let body = decode_body(&buf, &headers);
+    static CHARSET_META: LazyLock<regex::bytes::Regex> =
+        LazyLock::new(|| regex::bytes::Regex::new(r"(?i)<meta[^>]*?charset").unwrap());
     Ok(Page {
+        bom: buf.starts_with(&[0xEF, 0xBB, 0xBF]),
+        meta_charset_offset: CHARSET_META.find(&buf).map(|m| m.end()),
         status,
         final_url,
         headers,
@@ -290,6 +303,8 @@ pub struct FileProbe {
     pub size: Option<usize>,
     /// 본문이 상한을 넘어 앞부분만 보관함
     pub truncated: bool,
+    /// 받은 바이트가 UTF-8 로 올바름 (상한에서 잘린 마지막 글자는 허용)
+    pub utf8: bool,
     pub error: Option<String>,
 }
 
@@ -395,6 +410,7 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
         probe.truncated = true;
         buf.truncate(max);
     }
+    probe.utf8 = std::str::from_utf8(&buf).map_or_else(|e| e.error_len().is_none(), |_| true);
     let body = decode_body(&buf, &headers);
     // 텍스트 파일 본문에 차단 공급자 이름이 언급된 경우를 오인하지 않도록 HTML 응답만 본다
     if let Some(vendor) = looks_like_html(&body)
@@ -481,9 +497,9 @@ pub async fn probe_link(client: &Client, raw: &str, base: &Url) -> LinkProbe {
 pub async fn probe_status_body(client: &Client, url: &Url) -> Result<(u16, String), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
-    let (body, _) = read_text(res, 65_536).await.map_err(|e| describe(&e))?;
+    let (body, _) = read_text(res, 65_536).await.map_err(describe_owned)?;
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         return Err(format!("봇 차단 응답({vendor})"));
     }
@@ -494,7 +510,7 @@ pub async fn probe_status_body(client: &Client, url: &Url) -> Result<(u16, Strin
 pub async fn probe_status(client: &Client, url: &Url) -> Result<(u16, Url), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     Ok((res.status().as_u16(), res.url().clone()))
 }
 
@@ -518,13 +534,13 @@ pub async fn redirect_chain(
         .timeout(timeout)
         .redirect(Policy::none())
         .build()
-        .map_err(|e| e.to_string())?;
+        .expect("http client");
     let mut hops = Vec::new();
     let mut current = url.clone();
     for _ in 0..=max {
         let res = send_get(&client, current.as_str())
             .await
-            .map_err(|e| describe(&e))?;
+            .map_err(describe_owned)?;
         let status = res.status().as_u16();
         hops.push(Hop {
             url: current.to_string(),
@@ -578,7 +594,7 @@ pub async fn fetch_bytes(
 ) -> Result<(u16, Option<String>, Vec<u8>, bool), String> {
     let mut res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let ct = res
         .headers()
@@ -586,7 +602,7 @@ pub async fn fetch_bytes(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let mut buf = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
         buf.extend_from_slice(&chunk);
         if buf.len() >= max {
             buf.truncate(max);
@@ -596,22 +612,126 @@ pub async fn fetch_bytes(
     Ok((status, ct, buf, false))
 }
 
-/// 본문을 보관하지 않고 바이트 수만 센다 (`max` 에서 멈춤). 2xx 가 아니면 오류.
-pub async fn count_bytes(client: &Client, url: &Url, max: usize) -> Result<usize, String> {
+/// 하위 리소스 표본: 상태·최종 URL·Content-Type·전체 크기·앞부분 본문.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceSample {
+    pub status: u16,
+    pub final_url: String,
+    pub content_type: Option<String>,
+    /// 받은 바이트 (상한 `max` 에서 멈춤)
+    pub bytes: usize,
+    /// 앞 `keep` 바이트
+    pub body: Vec<u8>,
+}
+
+/// 리소스를 받아 상태와 크기, 앞부분 본문을 돌려준다 (상태가 오류여도 Ok).
+pub async fn sample_resource(
+    client: &Client,
+    url: &Url,
+    max: usize,
+    keep: usize,
+) -> Result<ResourceSample, String> {
     let mut res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
-    if !res.status().is_success() {
-        return Err(format!("HTTP {}", res.status().as_u16()));
-    }
-    let mut n = 0;
-    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
-        n += chunk.len();
-        if n >= max {
-            return Ok(max);
+        .map_err(describe_owned)?;
+    let mut s = ResourceSample {
+        status: res.status().as_u16(),
+        final_url: res.url().to_string(),
+        content_type: res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        ..Default::default()
+    };
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
+        s.bytes += chunk.len();
+        if s.body.len() < keep {
+            s.body
+                .extend_from_slice(&chunk[..chunk.len().min(keep - s.body.len())]);
+        }
+        if s.bytes >= max {
+            s.bytes = max;
+            break;
         }
     }
-    Ok(n)
+    Ok(s)
+}
+
+/// 리다이렉트를 따라가지 않고 첫 응답의 (상태, Location, HSTS 헤더 유무) 를 본다.
+pub async fn first_hop(
+    ua: &str,
+    timeout: Duration,
+    url: &Url,
+) -> Result<(u16, Option<String>, bool), String> {
+    let client = Client::builder()
+        .user_agent(ua)
+        .timeout(timeout)
+        .redirect(Policy::none())
+        .build()
+        .expect("http client");
+    let res = send_get(&client, url.as_str())
+        .await
+        .map_err(describe_owned)?;
+    let h = res.headers();
+    Ok((
+        res.status().as_u16(),
+        h.get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        h.contains_key(reqwest::header::STRICT_TRANSPORT_SECURITY),
+    ))
+}
+
+/// 임의의 Origin 으로 요청해 (Access-Control-Allow-Origin, Allow-Credentials 가 true 인지) 를 본다.
+pub async fn cors_probe(
+    client: &Client,
+    url: &Url,
+    origin: &str,
+) -> Result<(Option<String>, bool), String> {
+    let res = client
+        .get(url.as_str())
+        .header(reqwest::header::ORIGIN, origin)
+        .send()
+        .await
+        .map_err(describe_owned)?;
+    let h = res.headers();
+    Ok((
+        h.get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        h.get(reqwest::header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
+    ))
+}
+
+/// 압축을 풀지 않는 클라이언트로 요청해 (상태, Content-Encoding) 을 본다.
+pub async fn raw_encoding(
+    ua: &str,
+    timeout: Duration,
+    url: &Url,
+) -> Result<(u16, Option<String>), String> {
+    let client = Client::builder()
+        .user_agent(ua)
+        .timeout(timeout)
+        .gzip(false)
+        .brotli(false)
+        .build()
+        .expect("http client");
+    let res = client
+        .get(url.as_str())
+        .header(reqwest::header::ACCEPT_ENCODING, "gzip, br")
+        .send()
+        .await
+        .map_err(describe_owned)?;
+    Ok((
+        res.status().as_u16(),
+        res.headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+    ))
 }
 
 /// 하위 sitemap 을 받아 URL 목록을 돌려준다. `.xml.gz` (gzip) 도 풀어서 읽는다.
@@ -661,7 +781,7 @@ pub struct SamplePage {
 pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let final_url = res.url().clone();
     let header_noindex = res
@@ -672,7 +792,7 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
         .any(|v| v.to_ascii_lowercase().contains("noindex"));
     let (body, _) = read_text(res, MAX_SAMPLE_BYTES)
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         return Err(format!("봇 차단 응답({vendor})"));
     }
@@ -716,7 +836,7 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
 pub async fn probe_headers(client: &Client, url: &Url) -> Result<(u16, HeaderMap), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     Ok((res.status().as_u16(), res.headers().clone()))
 }
 
@@ -724,7 +844,7 @@ pub async fn probe_headers(client: &Client, url: &Url) -> Result<(u16, HeaderMap
 pub async fn head_length(client: &Client, url: &Url) -> Result<(u16, Option<u64>), String> {
     let res = send_head(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let len = res
         .headers()
         .get(reqwest::header::CONTENT_LENGTH)
@@ -734,24 +854,54 @@ pub async fn head_length(client: &Client, url: &Url) -> Result<(u16, Option<u64>
 }
 
 /// AI 크롤러 UA 요청: (상태, 최종 URL, 챌린지 공급자). 본문은 200KB 까지만 본다.
-pub async fn probe_ua(
+/// ETag·Last-Modified 로 조건부 GET 을 보내 상태 코드를 받는다 (304 지원 확인).
+pub async fn conditional_status(
     client: &Client,
     url: &Url,
-) -> Result<(u16, Url, Option<&'static str>), String> {
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<u16, String> {
+    let mut req = client.get(url.as_str());
+    if let Some(e) = etag {
+        req = req.header(reqwest::header::IF_NONE_MATCH, e);
+    }
+    if let Some(l) = last_modified {
+        req = req.header(reqwest::header::IF_MODIFIED_SINCE, l);
+    }
+    let res = req.send().await.map_err(describe_owned)?;
+    Ok(res.status().as_u16())
+}
+
+/// (상태 코드, 최종 URL, 봇 차단 공급자, `<title>`)
+pub type UaProbe = (u16, Url, Option<&'static str>, Option<String>);
+
+/// 지정한 User-Agent 로 페이지를 받아 상태·차단 여부·제목을 본다 (제목은 일반 요청과 비교해 클로킹 단서로 쓴다).
+pub async fn probe_ua(client: &Client, url: &Url) -> Result<UaProbe, String> {
     let mut res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let final_url = res.url().clone();
     let mut buf = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
         buf.extend_from_slice(&chunk);
         if buf.len() >= 200_000 {
             break;
         }
     }
-    let challenge = crate::signals::bot_challenge(&String::from_utf8_lossy(&buf));
-    Ok((status, final_url, challenge))
+    let text = String::from_utf8_lossy(&buf);
+    let challenge = crate::signals::bot_challenge(&text);
+    let title = scraper::Html::parse_document(&text)
+        .select(&scraper::Selector::parse("title").expect("valid selector"))
+        .next()
+        .map(|t| {
+            t.text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+    Ok((status, final_url, challenge, title))
 }
 
 #[cfg(test)]
@@ -933,7 +1083,7 @@ mod tests {
         let (status, body) = probe_status_body(&client(), &url).await.unwrap();
         assert_eq!((status, body.len()), (404, 65_536));
 
-        // fetch_bytes / count_bytes 상한
+        // fetch_bytes / sample_resource 상한
         let (_s, url) = serve(
             "/bin",
             ResponseTemplate::new(200).set_body_bytes(vec![1u8; 5000]),
@@ -941,7 +1091,72 @@ mod tests {
         .await;
         let (_, _, bytes, truncated) = fetch_bytes(&client(), &url, 100).await.unwrap();
         assert_eq!((bytes.len(), truncated), (100, true));
-        assert_eq!(count_bytes(&client(), &url, 100).await.unwrap(), 100);
+        let r = sample_resource(&client(), &url, 100, 10).await.unwrap();
+        assert_eq!((r.status, r.bytes, r.body.len()), (200, 100, 10));
+        let r = sample_resource(&client(), &url, 1_000_000, 10_000)
+            .await
+            .unwrap();
+        assert_eq!((r.bytes, r.body.len()), (5000, 5000));
+        assert_eq!(
+            raw_encoding("t", Duration::from_secs(5), &url)
+                .await
+                .unwrap(),
+            (200, None)
+        );
+        let (_s3, moved) = serve(
+            "/moved",
+            ResponseTemplate::new(301)
+                .insert_header("location", "https://b.com/")
+                .insert_header("strict-transport-security", "max-age=1")
+                .insert_header("access-control-allow-origin", "https://o.invalid")
+                .insert_header("access-control-allow-credentials", "true"),
+        )
+        .await;
+        assert_eq!(
+            first_hop("t", Duration::from_secs(5), &moved)
+                .await
+                .unwrap(),
+            (301, Some("https://b.com/".into()), true)
+        );
+        let no_redirect = Client::builder().redirect(Policy::none()).build().unwrap();
+        assert_eq!(
+            cors_probe(&no_redirect, &moved, "https://o.invalid")
+                .await
+                .unwrap(),
+            (Some("https://o.invalid".into()), true)
+        );
+        assert!(
+            first_hop(
+                "t",
+                Duration::from_secs(5),
+                &Url::parse("http://127.0.0.1:9/").unwrap()
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            cors_probe(&client(), &Url::parse("http://127.0.0.1:9/").unwrap(), "x")
+                .await
+                .is_err()
+        );
+        let (_s2, gz) = serve(
+            "/gz",
+            ResponseTemplate::new(200).insert_header("content-encoding", "gzip"),
+        )
+        .await;
+        assert_eq!(
+            raw_encoding("t", Duration::from_secs(5), &gz)
+                .await
+                .unwrap(),
+            (200, Some("gzip".into()))
+        );
+        let closed = Url::parse("http://127.0.0.1:9/").unwrap();
+        assert!(
+            raw_encoding("t", Duration::from_secs(5), &closed)
+                .await
+                .is_err()
+        );
+        assert!(sample_resource(&client(), &closed, 10, 10).await.is_err());
 
         // UA 요청은 앞 200KB 만 본다
         let (_s, url) = serve(
@@ -949,7 +1164,7 @@ mod tests {
             ResponseTemplate::new(200).set_body_string("d".repeat(300_000)),
         )
         .await;
-        let (status, _, challenge) = probe_ua(&client(), &url).await.unwrap();
+        let (status, _, challenge, _) = probe_ua(&client(), &url).await.unwrap();
         assert_eq!((status, challenge), (200, None));
     }
 
@@ -1025,5 +1240,28 @@ mod tests {
                 .unwrap_err()
                 .starts_with("gzip")
         );
+    }
+
+    #[tokio::test]
+    async fn invalid_location_and_header_noindex() {
+        let (_s, url) = serve(
+            "/r",
+            ResponseTemplate::new(301).insert_header("location", "http://["),
+        )
+        .await;
+        assert!(
+            redirect_chain("t", Duration::from_secs(5), &url, 3)
+                .await
+                .unwrap_err()
+                .contains("invalid Location")
+        );
+        let (_s, url) = serve(
+            "/p",
+            ResponseTemplate::new(200)
+                .insert_header("x-robots-tag", "googlebot: NOINDEX")
+                .set_body_string("<html><body>x</body></html>"),
+        )
+        .await;
+        assert!(probe_page(&client(), &url).await.unwrap().noindex);
     }
 }

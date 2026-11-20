@@ -26,7 +26,14 @@ static TABLES: LazyLock<Selector> = LazyLock::new(|| sel("table"));
 static TH: LazyLock<Selector> = LazyLock::new(|| sel("th, [scope]"));
 static AUTOPLAY: LazyLock<Selector> = LazyLock::new(|| sel("video[autoplay], audio[autoplay]"));
 static TABINDEX: LazyLock<Selector> = LazyLock::new(|| sel("[tabindex]"));
-static OBSOLETE: LazyLock<Selector> = LazyLock::new(|| sel("marquee, blink, font, center"));
+/// WHATWG HTML 명세 "Obsolete features" 의 폐기 요소
+static OBSOLETE: LazyLock<Selector> = LazyLock::new(|| {
+    sel(
+        "acronym, applet, basefont, bgsound, big, blink, center, dir, font, frame, frameset, \
+         isindex, keygen, listing, marquee, menuitem, multicol, nextid, nobr, noembed, noframes, \
+         plaintext, rb, rtc, spacer, strike, tt, xmp",
+    )
+});
 static MAIN: LazyLock<Selector> = LazyLock::new(|| sel("main, [role=main]"));
 static NAV: LazyLock<Selector> = LazyLock::new(|| sel("nav, [role=navigation]"));
 static HEADER: LazyLock<Selector> = LazyLock::new(|| sel("header, [role=banner]"));
@@ -83,8 +90,13 @@ pub struct A11yFacts {
 
 static HEADINGS: LazyLock<Selector> = LazyLock::new(|| sel("h1, h2, h3, h4, h5, h6"));
 static IMG_ALT: LazyLock<Selector> = LazyLock::new(|| sel("img[alt]"));
-static ID_REFS: LazyLock<Selector> =
-    LazyLock::new(|| sel("label[for], [aria-labelledby], [aria-describedby], [aria-controls]"));
+static ID_REFS: LazyLock<Selector> = LazyLock::new(|| {
+    sel(
+        "label[for], [aria-labelledby], [aria-describedby], [aria-controls], [headers], [aria-owns], \
+         [aria-activedescendant], [aria-details], [aria-errormessage], [aria-flowto], input[list], [form], \
+         [popovertarget], [commandfor], [itemref]",
+    )
+});
 static ARIA_HIDDEN: LazyLock<Selector> = LazyLock::new(|| sel("[aria-hidden=true]"));
 static FOCUSABLE: LazyLock<Selector> = LazyLock::new(|| {
     sel(
@@ -328,6 +340,17 @@ pub fn extract(doc: &Html) -> A11yFacts {
             "aria-labelledby",
             "aria-describedby",
             "aria-controls",
+            "headers",
+            "aria-owns",
+            "aria-activedescendant",
+            "aria-details",
+            "aria-errormessage",
+            "aria-flowto",
+            "list",
+            "form",
+            "popovertarget",
+            "commandfor",
+            "itemref",
         ] {
             if attr_name == "for" && el.value().name() != "label" {
                 continue;

@@ -1233,3 +1233,308 @@ async fn invalid_og_image_url() {
     .unwrap();
     assert_eq!(presence(&r, "open_graph.image_file"), Presence::Unknown);
 }
+
+/// docs/coverage.md 가 가리키는 항목 id 가 모두 카탈로그에 있어야 한다.
+#[test]
+fn coverage_doc_ids_exist() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/coverage.md");
+    let Ok(doc) = std::fs::read_to_string(path) else {
+        return; // 패키지로 배포된 소스에는 docs 가 없다
+    };
+    let catalog: std::collections::BTreeSet<&str> = devup_access_checker::CATALOG
+        .iter()
+        .map(|(id, _, _)| *id)
+        .collect();
+    let prefixes = [
+        "meta.",
+        "indexing.",
+        "open_graph.",
+        "twitter.",
+        "facebook.",
+        "structured_data.",
+        "content.",
+        "accessibility.",
+        "analytics.",
+        "performance.",
+        "transport.",
+        "crawling.",
+        "geo.",
+        "not_found_page.",
+        "links.",
+        "security.",
+        "trust.",
+        "site.",
+    ];
+    let mut missing = Vec::new();
+    for part in doc.split('`').skip(1).step_by(2) {
+        if prefixes.iter().any(|p| part.starts_with(p)) && !catalog.contains(part) {
+            missing.push(part.to_string());
+        }
+    }
+    assert!(missing.is_empty(), "카탈로그에 없는 id: {missing:?}");
+}
+
+#[tokio::test]
+async fn search_engine_network_items() {
+    let s = MockServer::start().await;
+    let port = s.address().port();
+    let page = r#"<!doctype html><html><head><title>t</title>
+<link rel="alternate" type="application/rss+xml" href="/feed.xml"></head><body><p>x</p></body></html>"#;
+    let ok = |ct: &str, body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", ct)
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ok("text/html", page)
+                .insert_header("etag", "\"v1\"")
+                .insert_header("last-modified", "Wed, 21 Oct 2026 07:28:00 GMT"),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(301)
+                .insert_header("location", format!("http://127.0.0.1:{port}/")),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ok("text/plain", "User-agent: *\nDisallow: /start\n"))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/feed.xml"))
+        .respond_with(ok(
+            "application/rss+xml",
+            "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><link>https://other.example/</link>\
+             <item><link>/rel</link><content:encoded>본문</content:encoded></item></channel></rss>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/BingSiteAuth.xml"))
+        .respond_with(ok(
+            "application/xml",
+            "<?xml version=\"1.0\"?><users><user>ABC</user></users>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/0123456789abcdef.txt"))
+        .respond_with(ok("text/plain", "0123456789abcdef\n"))
+        .mount(&s)
+        .await;
+
+    let r = Checker::new(opts(|o| {
+        o.indexnow_key = Some("0123456789abcdef".into());
+        o.page_samples = 0;
+        o.check_resources = false;
+    }))
+    .check(&format!("http://localhost:{port}/start"))
+    .await
+    .unwrap();
+    for id in [
+        "crawling.feed_valid",
+        "crawling.feed_items",
+        "crawling.feed_foreign_host",
+        "crawling.feed_full_content",
+        "meta.bing_site_auth_file",
+        "crawling.robots_encoding",
+        "crawling.indexnow_key_file",
+        "crawling.ua_access.yeti",
+        "crawling.ua_access.bingbot",
+        "transport.redirect_chain_robots_blocked",
+    ] {
+        assert_eq!(presence(&r, id), Presence::Present, "{id}");
+    }
+    assert_eq!(presence(&r, "crawling.feed_oversize"), Presence::Missing);
+    let ua = r
+        .get("crawling.ua_access.yeti")
+        .unwrap()
+        .value
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (ua["title"].as_str(), ua["sameTitleAsPage"].as_bool()),
+        (Some("t"), Some(true))
+    );
+    assert_eq!(presence(&r, "not_found_page.redirects"), Presence::Missing);
+
+    // 형식이 틀린 키는 요청하지 않는다
+    let r = Checker::new(opts(|o| {
+        o.indexnow_key = Some("not a key".into());
+        o.check_transport = false;
+        o.check_links = false;
+        o.page_samples = 0;
+        o.check_resources = false;
+    }))
+    .check(&s.uri())
+    .await
+    .unwrap();
+    assert_eq!(
+        presence(&r, "crawling.indexnow_key_file"),
+        Presence::Missing
+    );
+    assert_eq!(presence(&r, "crawling.feed_valid"), Presence::NotApplicable);
+    assert_eq!(
+        presence(&r, "not_found_page.redirects"),
+        Presence::NotApplicable
+    );
+}
+
+#[tokio::test]
+async fn subpath_llms_agent_card_and_robots_chain() {
+    let s = MockServer::start().await;
+    let ok = |ct: &str, body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", ct)
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .and(path("/docs/page"))
+        .respond_with(ok(
+            "text/html",
+            "<html><head><title>d</title></head><body>x</body></html>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/docs/llms.txt"))
+        .respond_with(ok("text/plain", "# Docs\n"))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/agent-card.json"))
+        .respond_with(ok("application/json", r#"{"name":"a"}"#))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ok("text/plain", "User-agent: *\nAllow: /\n"))
+        .mount(&s)
+        .await;
+    let r = Checker::new(opts(|o| {
+        o.page_samples = 0;
+        o.check_resources = false;
+        o.check_ai_user_agents = false;
+    }))
+    .check(&format!("{}/docs/page", s.uri()))
+    .await
+    .unwrap();
+    assert_eq!(presence(&r, "geo.llms_txt_subpath"), Presence::Present);
+    assert_eq!(presence(&r, "geo.a2a_agent_card"), Presence::Missing);
+    assert_eq!(
+        presence(&r, "crawling.robots_redirect_hops"),
+        Presence::Missing
+    );
+    assert_eq!(
+        presence(&r, "crawling.robots_content_type"),
+        Presence::Present
+    );
+}
+
+#[tokio::test]
+async fn statement_mobile_icons_and_vulnerable_js() {
+    let s = MockServer::start().await;
+    let png = |w: u32| {
+        let mut v = vec![
+            0x89, b'P', b'N', b'G', 13, 10, 26, 10, 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        v.extend(w.to_be_bytes());
+        v.extend(w.to_be_bytes());
+        v.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        v
+    };
+    let page = r#"<html><head><title>t</title><link rel="apple-touch-icon" href="/apple.png"><link rel="manifest" href="/m.json">
+<link rel="alternate" media="only screen and (max-width: 640px)" href="/m"><script src="/js/jquery-1.12.4.min.js"></script></head>
+<body><a href="/accessibility">웹 접근성 정책</a></body></html>"#;
+    let ok = |ct: &str, body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", ct)
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ok("text/html", page))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/accessibility"))
+        .respond_with(ok(
+            "text/html",
+            "<p>문의: <a href=\"mailto:a@a.com\">메일</a> WCAG 2.2 2026-01-01</p>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/m"))
+        .respond_with(ok(
+            "text/html",
+            &format!(
+                r#"<html><head><title>m</title><link rel="canonical" href="{}/"></head></html>"#,
+                s.uri()
+            ),
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/apple.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .set_body_bytes(png(180)),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/icon.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .set_body_bytes(png(180)),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/m.json"))
+        .respond_with(ok("application/manifest+json", r#"{"name":"a","icons":[{"src":"/icon.png","sizes":"512x512"},{"src":"/x.png","sizes":"bad"},{"src":"/y.png","sizes":5},{"src":"/z.png","sizes":""}]}"#))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/js/jquery-1.12.4.min.js"))
+        .respond_with(ok("text/javascript", "/*! jQuery v1.12.4 */"))
+        .mount(&s)
+        .await;
+    let r = Checker::new(opts(|o| {
+        o.page_samples = 0;
+        o.check_ai_user_agents = false;
+    }))
+    .check(&s.uri())
+    .await
+    .unwrap();
+    for id in [
+        "accessibility.statement_link",
+        "accessibility.statement_feedback",
+        "meta.apple_touch_icon_spec",
+        "meta.manifest_icon_size_mismatch",
+        "security.vulnerable_js_libraries",
+    ] {
+        assert_eq!(presence(&r, id), Presence::Present, "{id}");
+    }
+    for id in [
+        "meta.mobile_alternate_mismatch",
+        "security.cors_reflects_origin_credentials",
+        "transport.hsts_over_http",
+    ] {
+        assert_eq!(presence(&r, id), Presence::Missing, "{id}");
+    }
+    assert_eq!(
+        presence(&r, "transport.http_redirect_off_host"),
+        Presence::NotApplicable
+    );
+}

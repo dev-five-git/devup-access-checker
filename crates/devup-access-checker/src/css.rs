@@ -9,6 +9,74 @@ static OUTLINE_NONE: LazyLock<Regex> = LazyLock::new(|| {
 });
 static FONT_FACE: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?is)@font-face\s*\{([^}]*)\}").unwrap());
+static IMPORT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?i)@import\s").unwrap());
+static WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap());
+static ORIENTATION_LOCK: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)@media[^{]*orientation\s*:\s*(?:portrait|landscape)[^{]*\{[^@]*?rotate\(\s*-?(?:90|270)deg").unwrap()
+});
+static MOTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[;{\s])(?:animation|transition)(?:-name|-duration)?\s*:\s*([^;}]*)")
+        .unwrap()
+});
+static JUSTIFY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)text-align\s*:\s*justify").unwrap());
+static CONTENT_VISIBILITY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)content-visibility\s*:\s*auto").unwrap());
+static BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{([^{}]*)\}").unwrap());
+static SUMMARY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)(?:^|[},\s])summary\s*(?:,[^{]*)?\{[^}]*?display\s*:\s*([a-z-]+)").unwrap()
+});
+static KEYFRAMES: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)@(?:-webkit-|-moz-)?keyframes\b[^{]*\{").unwrap());
+static LAYOUT_PROP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[;{\s])(?:width|height|top|left|right|bottom|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|font-size|border-width)\s*:").unwrap()
+});
+
+/// 레이아웃·페인트를 다시 하게 만드는 속성을 움직이는 @keyframes 수 (webhint detect-css-reflows).
+fn layout_keyframes(css: &str) -> usize {
+    KEYFRAMES
+        .find_iter(css)
+        .filter(|m| {
+            // 여는 중괄호부터 짝이 맞는 닫는 중괄호까지
+            let mut depth = 1usize;
+            let rest = &css[m.end()..];
+            let end = rest
+                .char_indices()
+                .find(|(_, c)| {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })
+                .map_or(rest.len(), |(i, _)| i);
+            LAYOUT_PROP.is_match(&rest[..end])
+        })
+        .count()
+}
+
+/// 선언 블록 하나에서 접두사 없는 속성 뒤에 같은 속성의 접두사 버전이 오는 수.
+fn prefix_after_standard(block: &str) -> usize {
+    let props: Vec<String> = block
+        .split(';')
+        .filter_map(|d| {
+            d.split_once(':')
+                .map(|(p, _)| p.trim().to_ascii_lowercase())
+        })
+        .collect();
+    props
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| {
+            ["-webkit-", "-moz-", "-ms-", "-o-"].iter().any(|x| {
+                p.strip_prefix(x)
+                    .is_some_and(|std| props[..*i].iter().any(|q| q == std))
+            })
+        })
+        .count()
+}
+
 static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").unwrap());
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -19,6 +87,32 @@ pub struct CssFacts {
     pub font_faces: usize,
     /// font-display 가 없는 @font-face 수
     pub font_faces_without_display: usize,
+    /// `@import` 규칙 수 (스타일시트를 직렬로 더 받게 한다)
+    pub imports: usize,
+    /// 화면 방향 미디어 쿼리 안에서 90도 회전시키는 규칙 (방향 고정)
+    pub orientation_lock: usize,
+    /// 분석한 CSS 바이트
+    pub bytes: usize,
+    /// 주석·불필요한 공백을 지우면 줄어드는 바이트 (압축 안 된 CSS 추정)
+    pub minifiable_bytes: usize,
+    /// 움직임을 만드는 animation·transition 선언 수 (none·0s 제외)
+    pub animations: usize,
+    /// `prefers-reduced-motion` 미디어 쿼리 사용
+    pub reduced_motion: bool,
+    /// `text-align: justify` 선언 수
+    pub justify: usize,
+    /// `text-decoration: blink` 선언 수
+    pub blink: usize,
+    /// WOFF2 없이 ttf·otf·eot·svg 만 쓰는 @font-face 수
+    pub legacy_fonts: usize,
+    /// `content-visibility: auto` 선언 수
+    pub content_visibility: usize,
+    /// 레이아웃·페인트 속성을 움직이는 @keyframes 수
+    pub layout_keyframes: usize,
+    /// 접두사 없는 속성 뒤에 온 접두사 속성 수 (webhint css-prefix-order)
+    pub prefix_after_standard: usize,
+    /// summary 의 display 를 list-item 외로 바꾼 규칙 수
+    pub summary_display: usize,
 }
 
 impl CssFacts {
@@ -27,17 +121,61 @@ impl CssFacts {
         self.has_focus_visible |= other.has_focus_visible;
         self.font_faces += other.font_faces;
         self.font_faces_without_display += other.font_faces_without_display;
+        self.imports += other.imports;
+        self.orientation_lock += other.orientation_lock;
+        self.bytes += other.bytes;
+        self.minifiable_bytes += other.minifiable_bytes;
+        self.animations += other.animations;
+        self.reduced_motion |= other.reduced_motion;
+        self.justify += other.justify;
+        self.blink += other.blink;
+        self.legacy_fonts += other.legacy_fonts;
+        self.content_visibility += other.content_visibility;
+        self.layout_keyframes += other.layout_keyframes;
+        self.prefix_after_standard += other.prefix_after_standard;
+        self.summary_display += other.summary_display;
     }
 }
 
 pub fn analyze(css: &str) -> CssFacts {
+    let original = css.len();
     let css = COMMENT.replace_all(css, "");
+    let collapsed = WHITESPACE.replace_all(&css, " ").len();
     let mut f = CssFacts {
         outline_removed: OUTLINE_NONE.find_iter(&css).count(),
         has_focus_visible: css.contains(":focus-visible"),
+        imports: IMPORT.find_iter(&css).count(),
+        orientation_lock: ORIENTATION_LOCK.find_iter(&css).count(),
+        bytes: original,
+        minifiable_bytes: original - collapsed,
+        animations: MOTION
+            .captures_iter(&css)
+            .filter(|c| !matches!(c[1].trim(), "none" | "0s" | "0" | "all 0s"))
+            .count(),
+        reduced_motion: css.to_ascii_lowercase().contains("prefers-reduced-motion"),
+        justify: JUSTIFY.find_iter(&css).count(),
+        blink: crate::aria::css_blink(&css),
+        content_visibility: CONTENT_VISIBILITY.find_iter(&css).count(),
+        layout_keyframes: layout_keyframes(&css),
+        prefix_after_standard: BLOCK
+            .captures_iter(&css)
+            .map(|c| prefix_after_standard(&c[1]))
+            .sum(),
+        summary_display: SUMMARY
+            .captures_iter(&css)
+            .filter(|c| !c[1].eq_ignore_ascii_case("list-item"))
+            .count(),
         ..Default::default()
     };
     for c in FONT_FACE.captures_iter(&css) {
+        let body = c[1].to_ascii_lowercase();
+        if !body.contains("woff2")
+            && [".ttf", ".otf", ".eot", ".svg", "truetype", "opentype"]
+                .iter()
+                .any(|x| body.contains(x))
+        {
+            f.legacy_fonts += 1;
+        }
         f.font_faces += 1;
         if !c[1].to_ascii_lowercase().contains("font-display") {
             f.font_faces_without_display += 1;
@@ -53,7 +191,7 @@ mod tests {
     #[test]
     fn analyzes_css() {
         let f = analyze(
-            "/* outline:none; */ a:focus{outline:none} b{outline: 0 !important;} c{outline:1px solid}\
+            "@import url(a.css); /* @import x; */ /* outline:none; */ a:focus{outline:none} b{outline: 0 !important;} c{outline:1px solid}\
              .x:focus-visible{} @font-face{font-family:A;src:url(a.woff2)} @font-face{font-family:B;font-display:swap}",
         );
         assert_eq!(
@@ -62,8 +200,70 @@ mod tests {
                 outline_removed: 2,
                 has_focus_visible: true,
                 font_faces: 2,
-                font_faces_without_display: 1
+                font_faces_without_display: 1,
+                imports: 1,
+                orientation_lock: 0,
+                bytes: f.bytes,
+                minifiable_bytes: f.minifiable_bytes,
+                animations: 0,
+                reduced_motion: false,
+                justify: 0,
+                blink: 0,
+                legacy_fonts: 0,
+                content_visibility: 0,
+                layout_keyframes: 0,
+                prefix_after_standard: 0,
+                summary_display: 0,
             }
         );
+    }
+
+    #[test]
+    fn orientation_lock_and_minify_estimate() {
+        let f = analyze(
+            "@media (orientation: portrait) {
+  body { transform: rotate(90deg); }
+}
+/* 설명 */
+",
+        );
+        assert_eq!(f.orientation_lock, 1);
+        assert!(f.minifiable_bytes > 10 && f.bytes > f.minifiable_bytes);
+        assert_eq!(analyze("a{b:c}").minifiable_bytes, 0);
+    }
+
+    #[test]
+    fn motion_and_justify() {
+        let f = analyze(
+            "a{transition: color .2s} b{animation-name: spin} c{transition:none} d{animation-duration: 0s}             @media (prefers-reduced-motion: reduce){a{transition:none}} p{text-align: justify}",
+        );
+        assert_eq!((f.animations, f.reduced_motion, f.justify), (2, true, 1));
+        let mut g = analyze("x{TEXT-ALIGN:JUSTIFY}");
+        g.merge(&f);
+        assert_eq!((g.animations, g.reduced_motion, g.justify), (2, true, 2));
+    }
+
+    #[test]
+    fn performance_and_compat_rules() {
+        let f = analyze(
+            "@font-face{src:url(a.woff2) format('woff2'), url(a.ttf)} @font-face{src:url(b.eot)}\
+             .x{content-visibility:auto} @keyframes grow{from{width:0}to{width:10px}} @-webkit-keyframes fade{0%{opacity:0}100%{opacity:1}}\
+             @keyframes broken{from{top:0}\
+             .y{transition:all 1s;-webkit-transition:all 1s} .z{-webkit-box-shadow:none;box-shadow:none}\
+             details summary{display:block} summary{display:list-item}",
+        );
+        assert_eq!(
+            (
+                f.legacy_fonts,
+                f.content_visibility,
+                f.layout_keyframes,
+                f.prefix_after_standard,
+                f.summary_display
+            ),
+            (1, 1, 2, 1, 1)
+        );
+        let mut g = analyze("");
+        g.merge(&f);
+        assert_eq!(g.layout_keyframes, 2);
     }
 }

@@ -63,6 +63,108 @@ pub const SCHEMA_REQUIRED: &[(&str, &[&str], &[&str])] = &[
     ("breadcrumb_list", &["BreadcrumbList"], &["itemListElement"]),
     ("faq_page", &["FAQPage"], &["mainEntity"]),
     ("local_business", &["LocalBusiness"], &["name", "address"]),
+    // Bing 구조화 데이터 문서: 이름 없는 Person 은 무시된다
+    ("person", &["Person"], &["name"]),
+    // Google 검색 센터 리치 결과 문서의 "Required properties" (최상위 속성만)
+    ("book", &["Book"], &["name", "author", "url", "workExample"]),
+    ("course", &["Course"], &["name", "description"]),
+    ("dataset", &["Dataset"], &["name", "description"]),
+    (
+        "discussion_forum",
+        &["DiscussionForumPosting", "SocialMediaPosting"],
+        &["author", "datePublished", "text|image|video"],
+    ),
+    ("education_qa", &["Quiz"], &["hasPart"]),
+    (
+        "employer_rating",
+        &["EmployerAggregateRating"],
+        &["itemReviewed", "ratingValue", "ratingCount|reviewCount"],
+    ),
+    (
+        "event",
+        &[
+            "Event",
+            "MusicEvent",
+            "SportsEvent",
+            "TheaterEvent",
+            "BusinessEvent",
+            "EducationEvent",
+            "Festival",
+        ],
+        &["name", "startDate", "location"],
+    ),
+    (
+        "claim_review",
+        &["ClaimReview"],
+        &["claimReviewed", "reviewRating", "url"],
+    ),
+    (
+        "image_license",
+        &["ImageObject"],
+        &[
+            "contentUrl",
+            "license|acquireLicensePage|creditText|creator|copyrightNotice",
+        ],
+    ),
+    (
+        "job_posting",
+        &["JobPosting"],
+        &[
+            "title",
+            "description",
+            "datePosted",
+            "hiringOrganization",
+            "jobLocation|applicantLocationRequirements",
+        ],
+    ),
+    (
+        "loyalty_program",
+        &["MemberProgram"],
+        &["name", "description", "hasTiers"],
+    ),
+    (
+        "math_solver",
+        &["MathSolver"],
+        &["url", "usageInfo", "potentialAction"],
+    ),
+    ("movie", &["Movie"], &["name", "image"]),
+    ("product_group", &["ProductGroup"], &["name"]),
+    ("profile_page", &["ProfilePage"], &["mainEntity"]),
+    ("qa_page", &["QAPage"], &["mainEntity"]),
+    ("recipe", &["Recipe"], &["name", "image"]),
+    (
+        "software_app",
+        &[
+            "SoftwareApplication",
+            "MobileApplication",
+            "WebApplication",
+            "VideoGame",
+        ],
+        &["name", "offers", "aggregateRating|review"],
+    ),
+    (
+        "vacation_rental",
+        &["VacationRental"],
+        &[
+            "name",
+            "identifier",
+            "image",
+            "latitude",
+            "longitude",
+            "containsPlace",
+        ],
+    ),
+    (
+        "video",
+        &["VideoObject"],
+        &["name", "thumbnailUrl", "uploadDate"],
+    ),
+    ("item_list", &["ItemList"], &["itemListElement"]),
+    (
+        "merchant_return_policy",
+        &["MerchantReturnPolicy"],
+        &["applicableCountry", "returnPolicyCategory"],
+    ),
 ];
 
 /// JSON-LD 안의 `@type` 이 있는 객체 하나.
@@ -97,6 +199,8 @@ pub struct ExtraFacts {
     /// 같은 호스트에서 로드하는 script/stylesheet 경로
     pub same_origin_resources: Vec<String>,
     pub ld_objects: Vec<LdObject>,
+    /// 해석된 JSON-LD 블록 원본 (네이버 유형별 확인용)
+    pub ld_roots: Vec<Value>,
     pub published: Option<String>,
     pub modified: Option<String>,
     pub author: Option<String>,
@@ -445,6 +549,7 @@ pub fn extract(doc: &Html, base: &Url) -> ExtraFacts {
     f.modified = meta("article:modified_time")
         .or_else(|| meta("og:updated_time"))
         .or_else(|| ld("dateModified"));
+    f.ld_roots = ld_values.clone();
     // ===== AMP / 앱 링크 메타 =====
     for l in doc.select(&LINK) {
         if rels(&l).iter().any(|r| r == "amphtml") && f.amphtml.is_none() {
