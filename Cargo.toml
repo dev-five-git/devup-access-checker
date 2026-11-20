@@ -11,7 +11,7 @@ documentation = "https://docs.rs/devup-access-checker"
 
 [workspace.dependencies]
 # 버전은 changepacks 가 배포 시 함께 올린다.
-devup-access-checker = { path = "crates/devup-access-checker", version = "=0.0.0" }
+devup-access-checker = { path = "crates/devup-access-checker", version = "=0.1.0" }
 tokio = { version = "1.54", features = ["macros", "rt-multi-thread", "time", "sync"] }
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
