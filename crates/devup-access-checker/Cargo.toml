@@ -25,7 +25,7 @@ tokio.workspace = true
 futures = "0.3"
 encoding_rs = "0.8"
 flate2 = "1.1.11"
-psl = "2.1.258"
+psl = "2.1.259"
 unicode-normalization = "0.1.26"
 
 [dev-dependencies]
