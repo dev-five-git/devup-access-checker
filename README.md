@@ -506,6 +506,8 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `accessibility.phrasing_content_violation` | 구문 전용 요소 안의 블록 요소 |
 | `accessibility.form_conformance_errors` | 폼 요소 적합성 오류 |
 | `accessibility.summary_display_changed` | summary 의 display 변경 |
+| `accessibility.statement_feedback` | 접근성 성명 피드백 수단 (메일·전화·양식) |
+| `accessibility.definition_list_duplicate_terms` | 같은 dl 안에서 반복된 dt |
 | `trust.privacy_policy` | 개인정보처리방침 링크 |
 | `trust.terms` | 이용약관 링크 |
 | `trust.phone` | 전화번호 링크 (tel:) |
@@ -569,6 +571,8 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `security.protocol_relative_urls` | 프로토콜 상대 URL (//) |
 | `security.change_password_url` | 비밀번호 변경 URL (/.well-known/change-password) |
 | `security.inline_event_handlers` | 인라인 이벤트 핸들러 (onclick 등) |
+| `security.cors_reflects_origin_credentials` | CORS Origin 반사 + 자격증명 허용 |
+| `security.vulnerable_js_libraries` | 알려진 취약 버전 JS 라이브러리 |
 | `performance.static_asset_cache` | 정적 리소스 Cache-Control |
 | `performance.dom_size` | DOM 크기 |
 | `performance.third_party_scripts` | 서드파티 스크립트 호스트 |
@@ -586,6 +590,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `crawling.ua_access.bingbot` | 검색 크롤러 UA 응답 (bingbot) |
 | `crawling.ua_access.applebot` | 검색 크롤러 UA 응답 (applebot) |
 | `crawling.ua_access.daum` | 검색 크롤러 UA 응답 (daum) |
+| `crawling.ua_access.googlebot_smartphone` | 검색 크롤러 UA 응답 (googlebot_smartphone) |
 | `crawling.feed_valid` | 피드 형식 유효 (RSS·Atom) |
 | `crawling.feed_items` | 피드 item 수 |
 | `crawling.feed_foreign_host` | 피드 안 다른 호스트·상대 경로 URL |
@@ -619,6 +624,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `crawling.over_googlebot_size_limit` | Googlebot 2MB 초과 (HTML·JS) |
 | `crawling.conditional_request_304` | 조건부 요청 304 지원 |
 | `crawling.rel_next_prev` | rel=next·prev |
+| `crawling.dynamic_serving_without_vary` | UA 별 다른 HTML 인데 Vary: User-Agent 없음 |
 | `geo.question_headings` | 질문형 헤딩 (h2~h4) |
 | `geo.lists` | 목록 (항목 2개 이상 ul/ol, dl) |
 | `geo.tables` | 표 |
@@ -690,6 +696,9 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `meta.content_language_meta` | 폐기된 Content-Language meta |
 | `meta.http_equiv_invalid` | 브라우저가 무시하는 http-equiv |
 | `meta.base_after_resources` | link·script 뒤에 온 base (또는 base 여러 개) |
+| `meta.mobile_alternate_mismatch` | 별도 모바일 URL 과 메타 불일치 |
+| `meta.apple_touch_icon_spec` | apple-touch-icon PNG 180×180 |
+| `meta.manifest_icon_size_mismatch` | manifest 아이콘의 선언 크기와 실제 크기 불일치 |
 | `structured_data.hreflang_reciprocal` | hreflang 상호 참조 |
 | `structured_data.unknown_types` | schema.org 에 없는 @type |
 | `structured_data.rdfa` | RDFa |
@@ -755,6 +764,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `performance.asset_redirects` | 리다이렉트되는 JS |
 | `performance.unminified_js` | 압축(minify)되지 않은 JS |
 | `performance.legacy_javascript` | 레거시 JS (Babel 변환·폴리필 흔적) |
+| `performance.html_only_headers` | HTML 이 아닌 응답의 HTML 전용 헤더 |
 | `site.pages_sampled` | 표본 페이지 수집 |
 | `site.failed_pages` | 표본 중 2xx 아닌 페이지 |
 | `site.duplicate_titles` | 페이지 간 중복 title |
@@ -788,3 +798,6 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `transport.security_txt_canonical_mismatch` | security.txt Canonical 에 실제 URL 없음 |
 | `transport.ua_redirect_mismatch` | UA 별 다른 최종 호스트 (교묘한 리다이렉트 의심) |
 | `transport.asset_content_type_mismatch` | JavaScript 가 아닌 Content-Type 의 JS |
+| `transport.http_redirect_not_https_first` | http 가 https 가 아닌 곳으로 먼저 리다이렉트 |
+| `transport.http_redirect_off_host` | http 가 다른 호스트로 먼저 리다이렉트 |
+| `transport.hsts_over_http` | http 응답의 HSTS 헤더 (브라우저가 무시) |

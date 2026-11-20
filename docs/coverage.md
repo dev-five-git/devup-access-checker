@@ -613,7 +613,7 @@ MDN browser-compat-data 가 폐기(deprecated) 또는 비표준으로 표시한 
 | Apple (Applebot·앱 연결 문서) | 5쪽 | `crawling.robots_allows.applebot` `crawling.ua_access.applebot` `indexing.applebot_meta` `meta.apple_app_site_association_valid` `meta.apple_itunes_app_valid` |
 | sitemaps.org·Common Crawl | 3쪽 | `crawling.sitemap_namespace` `crawling.sitemap_invalid_priority` `crawling.sitemap_invalid_changefreq` `crawling.sitemap_invalid_lastmod` `crawling.sitemap_unescaped_entities` `crawling.sitemap_invalid_loc` `crawling.sitemap_out_of_scope` `crawling.sitemap_encoding` `geo.ua_access.ccbot` |
 
-robots.txt 해석은 Google 규칙에 맞췄습니다: 토큰 뒤 텍스트 무시(`Googlebot/2.1`), 가장 구체적인 그룹 대체(googlebot-image → googlebot), Crawl-delay 같은 비규칙 필드가 그룹을 끊지 않음, 429 를 5xx 처럼 취급. 별도 모바일 URL 의 메타 일치와 UA 별 동적 제공 비교는 모바일 UA 로 한 번 더 받아야 해 아직 넣지 않았습니다. 콘솔 기능, 스팸 의도 판단, 렌더링 후 상태는 확인할 수 없습니다.
+robots.txt 해석은 Google 규칙에 맞췄습니다: 토큰 뒤 텍스트 무시(`Googlebot/2.1`), 가장 구체적인 그룹 대체(googlebot-image → googlebot), Crawl-delay 같은 비규칙 필드가 그룹을 끊지 않음, 429 를 5xx 처럼 취급. 별도 모바일 URL 의 메타 일치는 `meta.mobile_alternate_mismatch`, Googlebot 스마트폰 UA 응답과의 동적 제공 비교는 `crawling.ua_access.googlebot_smartphone` `crawling.dynamic_serving_without_vary` 입니다. 콘솔 기능, 스팸 의도 판단, 렌더링 후 상태는 확인할 수 없습니다.
 
 ## AI·GEO 프로토콜
 
@@ -635,21 +635,21 @@ MCP 서버 발견(`/.well-known/mcp.json`)은 표준이 확정되지 않았고, 
 | Observatory 테스트 | 항목 id | 비고 |
 |---|---|---|
 | cookies | `security.insecure_cookies` `security.cookie_samesite_invalid` `security.session_cookie_flags` `security.cookie_prefix_invalid` `security.cookie_syntax_invalid` | 리다이렉트 경유 응답의 쿠키는 보지 않음 |
-| cors | `security.cors_wildcard` | Origin 을 반사하는 자격증명 허용은 별도 요청이 필요해 미구현 |
+| cors | `security.cors_wildcard` `security.cors_reflects_origin_credentials` | — |
 | cross-origin-embedder-policy | `security.cross_origin_embedder_policy` `security.cross_origin_policy_invalid` | — |
 | cross-origin-opener-policy | `security.cross_origin_opener_policy` `security.cross_origin_policy_invalid` | — |
 | cross-origin-resource-policy | `security.cross_origin_resource_policy` `security.cross_origin_policy_invalid` | — |
 | csp | `security.csp` `security.csp_meta` `security.csp_unsafe_inline` `security.csp_unsafe_eval` `security.csp_broad_script_source` `security.csp_object_src_unrestricted` `security.csp_unsafe_inline_style` `security.csp_insecure_scheme` `security.csp_base_uri_unrestricted` `security.csp_form_action_unrestricted` `security.csp_default_src_missing` `security.csp_strict_dynamic_without_nonce` `security.csp_duplicate_directives` `security.csp_report_only_only` `security.trusted_types` | — |
-| redirection | `transport.http_to_https_redirect` `transport.hsts_preload_ineligible` | http 요청의 첫 단계가 같은 호스트 https 인지는 preload 요건 안에서만 확인 |
+| redirection | `transport.http_to_https_redirect` `transport.http_redirect_not_https_first` `transport.http_redirect_off_host` `transport.hsts_preload_ineligible` | — |
 | referrer-policy | `security.referrer_policy` `security.referrer_policy_unsafe` | — |
-| strict-transport-security | `transport.hsts` `transport.hsts_invalid` `transport.hsts_max_age_short` `transport.hsts_preload_ineligible` | Chromium preload 목록 등재 여부 (외부 목록) |
+| strict-transport-security | `transport.hsts` `transport.hsts_invalid` `transport.hsts_max_age_short` `transport.hsts_preload_ineligible` `transport.hsts_over_http` | Chromium preload 목록 등재 여부 (외부 목록) |
 | subresource-integrity | `security.sri_missing` `security.sri_invalid` | — |
 | x-content-type-options | `security.x_content_type_options` `security.x_content_type_options_invalid` | — |
 | x-frame-options | `security.x_frame_options` `security.x_frame_options_invalid` `security.clickjacking_unprotected` | — |
 
 | webhint hint | 항목 id | 비고 |
 |---|---|---|
-| apple-touch-icons | `meta.apple_touch_icon` `meta.apple_touch_icon_file` | PNG·180px 확인은 미구현 (이미지 디코드 필요) |
+| apple-touch-icons | `meta.apple_touch_icon` `meta.apple_touch_icon_file` `meta.apple_touch_icon_spec` | — |
 | axe | [axe-core 규칙](#axe-core-규칙) 표 | — |
 | babel-config | — | 확인 불가: 빌드 설정 파일 |
 | button-type | `content.button_type_missing` | — |
@@ -671,7 +671,7 @@ MCP 서버 발견(`/.well-known/mcp.json`)은 표준이 확정되지 않았고, 
 | manifest-app-name | `meta.manifest_name_length` | — |
 | manifest-exists | `meta.manifest` `links.manifest` | — |
 | manifest-file-extension | `meta.manifest_file_extension` | — |
-| manifest-icons | `meta.manifest_icons_192_512` `meta.manifest_maskable_icon` | 아이콘 실제 크기 (이미지 디코드) |
+| manifest-icons | `meta.manifest_icons_192_512` `meta.manifest_maskable_icon` `meta.manifest_icon_size_mismatch` | 가장 크게 선언된 아이콘 하나만 받아 확인 |
 | manifest-is-valid | `meta.manifest_content` `meta.manifest_display_valid` | — |
 | manifest-scoped-urls | `meta.manifest_start_url_scope` | — |
 | meta-charset-utf-8 | `meta.charset_not_utf8` `meta.charset_late` `meta.charset_duplicate` | — |
@@ -682,12 +682,12 @@ MCP 서버 발견(`/.well-known/mcp.json`)은 표준이 확정되지 않았고, 
 | no-broken-links | `content.broken_internal_links` `content.broken_resources` | — |
 | no-disallowed-headers | `security.server_header` `security.x_powered_by` `security.info_disclosure_headers` `security.hpkp` `security.p3p` | Expires·Host·X-Frame-Options 금지 권고는 OWASP·Observatory 와 충돌해 따르지 않음 |
 | no-friendly-error-pages | — | 해당 없음: IE 전용 (`not_found_page.custom` 참고) |
-| no-html-only-headers | — | 미구현: 하위 리소스 응답 헤더 표본이 필요 |
+| no-html-only-headers | `performance.html_only_headers` | 정적 리소스 표본 하나 기준 |
 | no-http-redirects | `transport.redirect` `performance.asset_redirects` | — |
 | no-inline-styles | `performance.inline_style_attrs` `performance.inline_code_bytes` | — |
 | no-p3p | `security.p3p` | /w3c/p3p.xml 파일은 요청하지 않음 |
 | no-protocol-relative-urls | `security.protocol_relative_urls` | — |
-| no-vulnerable-javascript-libraries | — | 보류: 취약점 DB(retire.js 등)를 내장하고 갱신하는 설계가 필요 |
+| no-vulnerable-javascript-libraries | `security.vulnerable_js_libraries` | retire.js 저장소 내장 (`scripts/update_retire.py` 로 갱신). JS 실행이 필요한 판별은 제외 |
 | performance-budget | `performance.page_weight` `performance.html_bytes` | 네트워크 모델 기반 판정은 하지 않음 |
 | scoped-svg-styles | — | 확인 불가: CSS 선택자 적용 범위 계산 |
 | sri | `security.sri_missing` `security.sri_invalid` | 해시 일치 확인은 하지 않음 |
@@ -715,7 +715,7 @@ RFC 9116·IANA: `transport.security_txt` `transport.security_txt_fields`(10개 �
 | WAVE | 항목 110개 | `accessibility.redundant_title_attr` `content.linked_documents` (나머지는 기존 항목) |
 | EN 301 549 V3.2.1 | 9장 외 조항 71개 | `accessibility.statement_link` `accessibility.media_controls_missing` `structured_data.accessibility_metadata` (9장은 WCAG 2.2 표) |
 
-EU 웹 접근성 지침 제7조의 피드백 수단(접근성 성명 페이지 안의 연락 수단)은 성명 페이지를 한 번 더 받아야 해 아직 넣지 않았습니다.
+EU 웹 접근성 지침 제7조의 피드백 수단은 접근성 성명 페이지를 받아 `accessibility.statement_feedback` 으로 확인합니다. Nu HTML Checker 의 dl 안 dt 중복 경고는 `accessibility.definition_list_duplicate_terms` 입니다.
 
 ## HTML 검사기·성능
 

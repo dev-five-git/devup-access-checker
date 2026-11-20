@@ -370,6 +370,8 @@ pub struct QualityFacts {
     pub inline_handlers: usize,
     pub ad_class_names: Vec<String>,
     pub unsafe_attr_chars: Vec<String>,
+    /// 같은 dl 안에서 반복된 dt 이름
+    pub duplicate_dt: Vec<String>,
 }
 
 fn push(v: &mut Vec<String>, s: String) {
@@ -639,6 +641,25 @@ pub fn extract(doc: &Html, base: &Url) -> QualityFacts {
                 );
             }
         }
+        if name == "dl" {
+            let mut seen: Vec<String> = Vec::new();
+            for dt in el
+                .descendants()
+                .filter_map(ElementRef::wrap)
+                .filter(|d| d.value().name() == "dt")
+            {
+                let t = dt
+                    .text()
+                    .collect::<String>()
+                    .split_whitespace()
+                    .collect::<Vec<_>>()
+                    .join(" ");
+                if seen.contains(&t) {
+                    push(&mut f.duplicate_dt, t.clone());
+                }
+                seen.push(t);
+            }
+        }
         if matches!(name, "section" | "article") {
             f.sections += 1;
             let heading = el
@@ -829,7 +850,7 @@ mod tests {
 <a href="/a b">s</a><img src="a\b.png"><a href="/%zz">p</a><a href="javascript:go(1 2)">j</a>
 <input type="bogus"><button type="go">b</button><form method="put"></form><img loading="soon"><track kind="x">
 <time datetime="2026/01">x</time><time>2026-01-01</time><time datetime="PT2H">d</time><time>어제</time>
-<p>한글</p><p>한글</p>
+<p>한글</p><p>한글</p><dl><dt>용어</dt><dd>a</dd><dt>용어</dt><dd>b</dd><dt>다른</dt></dl>
 <div itemprop="name">a</div><span itemtype="https://schema.org/Thing">b</span><div itemscope itemref="nope"></div><div itemscope itemref="r"><p itemprop="x">ok</p></div><p id="r" itemprop="y">ref</p>
 <section><p>no heading</p></section><article><h2>ok</h2></article>
 <img src=""><img srcset="a.png 100w"><img sizes="100vw" src="b.png"><img data-src="lazy.png">
@@ -878,6 +899,7 @@ mod tests {
         assert_eq!((f.inline_styles, f.inline_handlers), (1, 1));
         assert_eq!(f.ad_class_names, ["ad-banner"]);
         assert_eq!(f.unsafe_attr_chars, ["p[title]"]);
+        assert_eq!(f.duplicate_dt, ["용어"]);
         let nfd: String = unicode_normalization::UnicodeNormalization::nfd("한글").collect();
         let f = run(&format!("<html><body><p>{nfd}</p></body></html>"));
         assert_eq!(f.non_nfc, 1);

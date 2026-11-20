@@ -1,5 +1,6 @@
 //! 수집한 사실(fact) → `Check` 목록 변환. 네트워크 접근 없음, 점수·판정 없음.
 
+use regex::Regex;
 use reqwest::header::HeaderMap;
 use serde_json::{Value, json};
 use url::Url;
@@ -69,6 +70,10 @@ pub const AI_CRAWLERS: &[(&str, &str, &str)] = &[
 
 /// 실제 User-Agent 로 페이지를 요청해 볼 검색엔진 크롤러 (가이드에 적힌 UA 문자열)
 pub const SEARCH_USER_AGENTS: &[(&str, &str)] = &[
+    (
+        "googlebot_smartphone",
+        "Mozilla/5.0 (Linux; Android 6.0.1; Nexus 5X Build/MMB29P) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/141.0.0.0 Mobile Safari/537.36 (compatible; Googlebot/2.1; +http://www.google.com/bot.html)",
+    ),
     (
         "yeti",
         "Mozilla/5.0 (compatible; Yeti/1.1; +https://naver.me/spd)",
@@ -250,6 +255,12 @@ pub struct ImageInfo {
     pub height: Option<usize>,
 }
 
+/// 접근성 성명 페이지 (URL, (상태, 본문 앞부분))
+pub type StatementProbe = (String, Result<(u16, String), String>);
+
+/// http 첫 응답 (상태, Location, HSTS 헤더 유무)
+pub type FirstHop = (u16, Option<String>, bool);
+
 /// (CSS·JS URL, (상태, Content-Encoding))
 pub type AssetEncoding = (String, Result<(u16, Option<String>), String>);
 
@@ -268,6 +279,18 @@ pub struct SearchProbes {
     pub gpc: Option<FileProbe>,
     /// ETag·Last-Modified 조건부 요청 상태. None = 두 헤더가 없음
     pub conditional: Option<Result<u16, String>>,
+    /// 접근성 성명 페이지 (URL, (상태, 본문 앞부분)). None = 링크 없음 또는 수행 안 함
+    pub statement: Option<StatementProbe>,
+    /// 별도 모바일 URL 페이지. None = 없음 또는 수행 안 함
+    pub mobile_alternate: Option<(String, Result<SamplePage, String>)>,
+    /// 임의 Origin 요청의 (ACAO, ACAC=true). None = 수행 안 함
+    pub cors: Option<Result<(Option<String>, bool), String>>,
+    /// http:// 요청의 첫 응답 (상태, Location, HSTS 헤더). None = 수행 안 함
+    pub http_first_hop: Option<Result<FirstHop, String>>,
+    /// apple-touch-icon 이미지. None = 수행 안 함
+    pub apple_touch_image: Option<Result<ImageInfo, String>>,
+    /// manifest 에서 가장 크게 선언된 아이콘 (선언 크기, 이미지). None = 해당 없음
+    pub manifest_icon: Option<(String, Result<ImageInfo, String>)>,
     /// 압축을 풀지 않고 받은 CSS·JS 표본의 (URL, (상태, Content-Encoding))
     pub asset_encodings: Vec<AssetEncoding>,
     /// 첫 RSS/Atom 피드 본문. None = 피드 링크 없음 또는 수행 안 함
@@ -1567,6 +1590,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     google_spec_checks(&mut o, i, &robots);
     aria_spec_checks(&mut o, i);
     quality_spec_checks(&mut o, i);
+    final_spec_checks(&mut o, i);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -8375,6 +8399,308 @@ fn quality_spec_checks(o: &mut Out, i: &Inputs) {
     );
 }
 
+/// HTML 문서에만 의미가 있는 헤더 (webhint no-html-only-headers).
+const HTML_ONLY_HEADERS: &[&str] = &[
+    "content-security-policy",
+    "x-content-security-policy",
+    "x-webkit-csp",
+    "x-ua-compatible",
+    "x-xss-protection",
+];
+
+/// 1·2차 대조에서 추가 요청이 필요해 남겨 두었던 항목.
+fn final_spec_checks(o: &mut Out, i: &Inputs) {
+    use Category::*;
+    let f = i.facts;
+    let sp = &i.extended.search;
+    let base = &i.page.final_url;
+    let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
+    let flag = |b: bool, applicable: bool| {
+        if applicable {
+            Presence::from_bool(b)
+        } else {
+            Presence::NotApplicable
+        }
+    };
+
+    // ===== 접근성 성명 피드백 수단 (EU 웹 접근성 지침 제7조) =====
+    let (p, v) = match &sp.statement {
+        None => (Presence::NotApplicable, None),
+        Some((u, Err(e))) => (Presence::Unknown, Some(json!({ "url": u, "error": e }))),
+        Some((u, Ok((status, body)))) => {
+            let lower = body.to_lowercase();
+            let contact =
+                lower.contains("mailto:") || lower.contains("tel:") || lower.contains("<form");
+            let dated = Regex::new(r"\d{4}[-./년]\s*\d{1,2}")
+                .expect("valid regex")
+                .is_match(body);
+            let standard = [
+                "wcag",
+                "en 301 549",
+                "kwcag",
+                "웹 콘텐츠 접근성 지침",
+                "접근성 지침",
+            ]
+            .iter()
+            .any(|k| lower.contains(k));
+            (
+                Presence::from_bool((200..300).contains(status) && contact),
+                Some(
+                    json!({ "url": u, "statusCode": status, "contact": contact, "date": dated, "standard": standard }),
+                ),
+            )
+        }
+    };
+    o.push(
+        "accessibility.statement_feedback",
+        Accessibility,
+        "접근성 성명 피드백 수단 (메일·전화·양식)",
+        p,
+        v,
+        Some("접근성 성명 페이지 안의 mailto·tel·form 기준 (EU 웹 접근성 지침 제7조)".into()),
+    );
+
+    // ===== 동적 제공·별도 모바일 URL =====
+    let smartphone = i
+        .ai_ua
+        .iter()
+        .find(|(id, _)| *id == "googlebot_smartphone")
+        .map(|(_, r)| r);
+    let vary_ua = header(&i.page.headers, "vary")
+        .is_some_and(|v| v.to_ascii_lowercase().contains("user-agent"));
+    o.push(
+        "crawling.dynamic_serving_without_vary",
+        Crawling,
+        "UA 별 다른 HTML 인데 Vary: User-Agent 없음",
+        match smartphone {
+            None => Presence::NotApplicable,
+            Some(Err(_)) => Presence::Unknown,
+            Some(Ok(probe)) => Presence::from_bool(
+                probe.3.as_deref().map(str::trim) != f.title.as_deref().map(str::trim) && !vary_ua,
+            ),
+        },
+        smartphone.and_then(|r| r.as_ref().ok()).map(|p| json!({ "smartphoneTitle": p.3, "desktopTitle": f.title, "varyUserAgent": vary_ua })),
+        Some("Googlebot 스마트폰 UA 응답의 제목이 다를 때 Vary 헤더 확인".into()),
+    );
+    let (p, v) = match &sp.mobile_alternate {
+        None => (Presence::NotApplicable, None),
+        Some((u, Err(e))) => (Presence::Unknown, Some(json!({ "url": u, "error": e }))),
+        Some((u, Ok(m))) => {
+            let mut bad: Vec<&str> = Vec::new();
+            if m.noindex
+                != f.meta("robots")
+                    .is_some_and(|r| r.to_ascii_lowercase().contains("noindex"))
+            {
+                bad.push("robots noindex 불일치");
+            }
+            if m.title.is_none() != f.title.is_none() {
+                bad.push("title 유무 불일치");
+            }
+            if m.description.is_none() != f.meta("description").is_none() {
+                bad.push("description 유무 불일치");
+            }
+            if !m
+                .canonical
+                .as_deref()
+                .and_then(|c| Url::parse(c).ok())
+                .is_some_and(|c| same_url(&c, base))
+            {
+                bad.push("모바일 페이지의 canonical 이 이 페이지가 아님");
+            }
+            (
+                Presence::from_bool(!bad.is_empty()),
+                Some(json!({ "url": u, "problems": bad })),
+            )
+        }
+    };
+    o.push(
+        "meta.mobile_alternate_mismatch",
+        Meta,
+        "별도 모바일 URL 과 메타 불일치",
+        p,
+        v,
+        Some("Google 모바일 우선 색인: 같은 robots·메타, 모바일은 데스크톱을 canonical 로".into()),
+    );
+
+    // ===== CORS·http 첫 응답 =====
+    let (p, v) = match &sp.cors {
+        None => (Presence::NotApplicable, None),
+        Some(Err(e)) => (Presence::Unknown, Some(json!(e))),
+        Some(Ok((acao, creds))) => (
+            Presence::from_bool(acao.as_deref() == Some(CORS_PROBE_ORIGIN) && *creds),
+            Some(json!({ "allowOrigin": acao, "allowCredentials": creds })),
+        ),
+    };
+    o.push(
+        "security.cors_reflects_origin_credentials",
+        Security,
+        "CORS Origin 반사 + 자격증명 허용",
+        p,
+        v,
+        Some("임의 Origin 요청에 그대로 허용하며 쿠키까지 허용 (Observatory)".into()),
+    );
+    let hop = sp.http_first_hop.as_ref();
+    let hop_ok = hop.and_then(|r| r.as_ref().ok());
+    let location = hop_ok.and_then(|(_, l, _)| l.as_deref()).and_then(|l| {
+        Url::parse(&format!("http://{}", base.host_str().unwrap_or_default()))
+            .ok()?
+            .join(l)
+            .ok()
+    });
+    let redirect = hop_ok.is_some_and(|(s, l, _)| (300..400).contains(s) && l.is_some());
+    let first = |pred: &dyn Fn(&Url) -> bool| match hop {
+        None => Presence::NotApplicable,
+        Some(Err(_)) => Presence::Unknown,
+        Some(Ok(_)) if !redirect => Presence::NotApplicable,
+        Some(Ok(_)) => Presence::from_bool(location.as_ref().is_some_and(pred)),
+    };
+    o.push(
+        "transport.http_redirect_not_https_first",
+        Transport,
+        "http 가 https 가 아닌 곳으로 먼저 리다이렉트",
+        first(&|u| u.scheme() != "https"),
+        location.as_ref().map(|u| json!(u.as_str())),
+        Some("Observatory·hstspreload: 첫 리다이렉트는 같은 호스트의 https".into()),
+    );
+    o.push(
+        "transport.http_redirect_off_host",
+        Transport,
+        "http 가 다른 호스트로 먼저 리다이렉트",
+        first(&|u| u.host_str() != base.host_str()),
+        location.as_ref().map(|u| json!(u.as_str())),
+        None,
+    );
+    o.push(
+        "transport.hsts_over_http",
+        Transport,
+        "http 응답의 HSTS 헤더 (브라우저가 무시)",
+        match hop {
+            None => Presence::NotApplicable,
+            Some(Err(_)) => Presence::Unknown,
+            Some(Ok((_, _, sts))) => Presence::from_bool(*sts),
+        },
+        None,
+        Some("webhint strict-transport-security".into()),
+    );
+
+    // ===== 이미지 실제 크기 =====
+    let (p, v) = match &sp.apple_touch_image {
+        None => (Presence::NotApplicable, None),
+        Some(Err(e)) => (Presence::Unknown, Some(json!(e))),
+        Some(Ok(img)) => {
+            let png = img
+                .content_type
+                .as_deref()
+                .is_some_and(|c| c.contains("png"));
+            let ok = png && img.width == Some(180) && img.height == Some(180);
+            (
+                Presence::from_bool(ok),
+                Some(
+                    json!({ "contentType": img.content_type, "width": img.width, "height": img.height }),
+                ),
+            )
+        }
+    };
+    o.push(
+        "meta.apple_touch_icon_spec",
+        Meta,
+        "apple-touch-icon PNG 180×180",
+        p,
+        v,
+        Some("webhint apple-touch-icons".into()),
+    );
+    let (p, v) = match &sp.manifest_icon {
+        None => (Presence::NotApplicable, None),
+        Some((_, Err(e))) => (Presence::Unknown, Some(json!(e))),
+        Some((declared, Ok(img))) => {
+            let actual = img.width.zip(img.height).map(|(w, h)| format!("{w}x{h}"));
+            (
+                Presence::from_bool(actual.as_deref() != Some(declared.as_str())),
+                Some(json!({ "url": img.url, "declared": declared, "actual": actual })),
+            )
+        }
+    };
+    o.push(
+        "meta.manifest_icon_size_mismatch",
+        Meta,
+        "manifest 아이콘의 선언 크기와 실제 크기 불일치",
+        p,
+        v,
+        Some("가장 크게 선언된 아이콘 하나를 받아 확인".into()),
+    );
+
+    // ===== HTML 전용 헤더·취약 라이브러리·정의 목록 =====
+    let (p, v) = match &i.extended.static_asset {
+        None => (Presence::NotApplicable, None),
+        Some((_, Err(e))) => (Presence::Unknown, Some(json!(e))),
+        Some((u, Ok((_, h)))) => {
+            let found: Vec<String> = HTML_ONLY_HEADERS
+                .iter()
+                .filter(|n| h.contains_key(**n))
+                .map(|n| n.to_string())
+                .collect();
+            (
+                Presence::from_bool(!found.is_empty()),
+                Some(json!({ "url": u, "headers": found })),
+            )
+        }
+    };
+    o.push(
+        "performance.html_only_headers",
+        Performance,
+        "HTML 이 아닌 응답의 HTML 전용 헤더",
+        p,
+        v,
+        Some(
+            "정적 리소스 표본 기준 (CSP·X-UA-Compatible·X-XSS-Protection 은 HTML 에서만 의미)"
+                .into(),
+        ),
+    );
+    let bodies: std::collections::HashMap<&str, String> = i
+        .extended
+        .page_weight
+        .iter()
+        .flat_map(|w| w.scripts.iter())
+        .filter_map(|(u, r)| {
+            r.as_ref()
+                .ok()
+                .map(|s| (u.as_str(), String::from_utf8_lossy(&s.body).into_owned()))
+        })
+        .collect();
+    let mut findings: Vec<Value> = Vec::new();
+    let mut detected: Vec<String> = Vec::new();
+    for url in &f.extra.script_urls {
+        for hit in crate::vulnjs::scan(url, bodies.get(url.as_str()).map(String::as_str)) {
+            detected.push(format!("{} {}", hit.library, hit.version));
+            if !hit.vulnerabilities.is_empty() {
+                findings.push(json!({
+                    "library": hit.library, "version": hit.version, "url": hit.url,
+                    "vulnerabilities": hit.vulnerabilities.iter().map(|v| json!({ "severity": v.severity, "ids": v.ids })).collect::<Vec<_>>(),
+                }));
+            }
+        }
+    }
+    o.push(
+        "security.vulnerable_js_libraries",
+        Security,
+        "알려진 취약 버전 JS 라이브러리",
+        flag(!findings.is_empty(), !f.extra.script_urls.is_empty()),
+        Some(json!({ "vulnerable": findings, "detected": detected })),
+        Some("retire.js 저장소(내장, scripts/update_retire.py 로 갱신)의 URL·파일명·본문 정규식 기준".into()),
+    );
+    o.push(
+        "accessibility.definition_list_duplicate_terms",
+        Accessibility,
+        "같은 dl 안에서 반복된 dt",
+        Presence::from_bool(!f.quality.duplicate_dt.is_empty()),
+        list(&f.quality.duplicate_dt),
+        Some("Nu HTML Checker 경고".into()),
+    );
+}
+
+/// CORS 확인에 쓰는 임의 Origin (존재하지 않는 도메인).
+pub const CORS_PROBE_ORIGIN: &str = "https://devup-access-checker-cors-probe.invalid";
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -9820,6 +10146,12 @@ mod tests {
             gpc: None,
             conditional: None,
             asset_encodings: Vec::new(),
+            statement: None,
+            mobile_alternate: None,
+            cors: None,
+            http_first_hop: None,
+            apple_touch_image: None,
+            manifest_icon: None,
             feed: Some(failed("https://a.com/feed")),
             bing_site_auth: Some(failed("https://a.com/BingSiteAuth.xml")),
             not_found_chain: Some(err()),
@@ -9872,6 +10204,12 @@ mod tests {
             gpc: None,
             conditional: None,
             asset_encodings: Vec::new(),
+            statement: None,
+            mobile_alternate: None,
+            cors: None,
+            http_first_hop: None,
+            apple_touch_image: None,
+            manifest_icon: None,
             feed: Some(feed),
             bing_site_auth: Some(found("https://a.com/BingSiteAuth.xml", "<users></users>")),
             not_found_chain: Some(Ok(vec![
@@ -10847,5 +11185,96 @@ mod tests {
             assert_eq!(p(&c, id), Presence::NotApplicable, "{id}");
         }
         assert_eq!(p(&c, "performance.link_header_preload"), Presence::Missing);
+    }
+
+    #[test]
+    fn final_items_branches() {
+        let mut fx = Fx::failing();
+        let p = |c: &[Check], id: &str| get(c, id).presence;
+        let html = r#"<html><head><title>데스크톱</title><meta name="robots" content="noindex"><meta name="description" content="d"></head>
+<body><dl><dt>a</dt><dt>a</dt></dl><script src="https://a.com/jquery-3.7.1.min.js"></script></body></html>"#;
+        fx.page = page("https://a.com/", html);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        fx.ai_ua = vec![(
+            "googlebot_smartphone",
+            Ok((200, u("https://a.com/"), None, Some("모바일".into()))),
+        )];
+        let s = &mut fx.extended.search;
+        s.statement = Some(("https://a.com/acc".into(), Err("boom".into())));
+        let mut mobile = sample_page(200);
+        mobile.title = None;
+        s.mobile_alternate = Some(("https://m.a.com/".into(), Ok(mobile)));
+        s.cors = Some(Ok((Some(CORS_PROBE_ORIGIN.into()), true)));
+        s.http_first_hop = Some(Ok((301, Some("http://www.a.com/".into()), true)));
+        s.apple_touch_image = Some(Err("boom".into()));
+        s.manifest_icon = Some(("512x512".into(), Err("boom".into())));
+        let mut hm = HeaderMap::new();
+        hm.insert("x-ua-compatible", "IE=edge".parse().unwrap());
+        fx.extended.static_asset = Some(("https://a.com/a.css".into(), Ok((200, hm))));
+        let c = fx.run();
+        for id in [
+            "crawling.dynamic_serving_without_vary",
+            "meta.mobile_alternate_mismatch",
+            "security.cors_reflects_origin_credentials",
+            "transport.http_redirect_not_https_first",
+            "transport.http_redirect_off_host",
+            "transport.hsts_over_http",
+            "performance.html_only_headers",
+            "accessibility.definition_list_duplicate_terms",
+        ] {
+            assert_eq!(p(&c, id), Presence::Present, "{id}");
+        }
+        for id in [
+            "accessibility.statement_feedback",
+            "meta.apple_touch_icon_spec",
+            "meta.manifest_icon_size_mismatch",
+        ] {
+            assert_eq!(p(&c, id), Presence::Unknown, "{id}");
+        }
+        assert_eq!(p(&c, "security.vulnerable_js_libraries"), Presence::Missing);
+
+        let s = &mut fx.extended.search;
+        s.statement = None;
+        s.mobile_alternate = Some(("https://m.a.com/".into(), Err("boom".into())));
+        s.cors = Some(Err("boom".into()));
+        s.http_first_hop = Some(Err("boom".into()));
+        s.apple_touch_image = None;
+        s.manifest_icon = None;
+        fx.extended.static_asset = Some(("https://a.com/a.css".into(), Err("boom".into())));
+        fx.ai_ua = vec![("googlebot_smartphone", Err("boom".into()))];
+        let c = fx.run();
+        for id in [
+            "meta.mobile_alternate_mismatch",
+            "security.cors_reflects_origin_credentials",
+            "transport.http_redirect_off_host",
+            "transport.hsts_over_http",
+            "performance.html_only_headers",
+            "crawling.dynamic_serving_without_vary",
+        ] {
+            assert_eq!(p(&c, id), Presence::Unknown, "{id}");
+        }
+        fx.extended.search.mobile_alternate = None;
+        fx.extended.search.cors = None;
+        fx.extended.search.http_first_hop = Some(Ok((200, None, false)));
+        fx.extended.static_asset = None;
+        fx.ai_ua = Vec::new();
+        let c = fx.run();
+        for id in [
+            "meta.mobile_alternate_mismatch",
+            "security.cors_reflects_origin_credentials",
+            "transport.http_redirect_not_https_first",
+            "performance.html_only_headers",
+            "crawling.dynamic_serving_without_vary",
+            "accessibility.statement_feedback",
+        ] {
+            assert_eq!(p(&c, id), Presence::NotApplicable, "{id}");
+        }
+        assert_eq!(p(&c, "transport.hsts_over_http"), Presence::Missing);
+        fx.extended.search.http_first_hop = None;
+        let c = fx.run();
+        assert_eq!(
+            p(&c, "transport.http_redirect_off_host"),
+            Presence::NotApplicable
+        );
     }
 }

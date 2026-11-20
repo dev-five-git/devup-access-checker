@@ -658,6 +658,54 @@ pub async fn sample_resource(
     Ok(s)
 }
 
+/// 리다이렉트를 따라가지 않고 첫 응답의 (상태, Location, HSTS 헤더 유무) 를 본다.
+pub async fn first_hop(
+    ua: &str,
+    timeout: Duration,
+    url: &Url,
+) -> Result<(u16, Option<String>, bool), String> {
+    let client = Client::builder()
+        .user_agent(ua)
+        .timeout(timeout)
+        .redirect(Policy::none())
+        .build()
+        .expect("http client");
+    let res = send_get(&client, url.as_str())
+        .await
+        .map_err(describe_owned)?;
+    let h = res.headers();
+    Ok((
+        res.status().as_u16(),
+        h.get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        h.contains_key(reqwest::header::STRICT_TRANSPORT_SECURITY),
+    ))
+}
+
+/// 임의의 Origin 으로 요청해 (Access-Control-Allow-Origin, Allow-Credentials 가 true 인지) 를 본다.
+pub async fn cors_probe(
+    client: &Client,
+    url: &Url,
+    origin: &str,
+) -> Result<(Option<String>, bool), String> {
+    let res = client
+        .get(url.as_str())
+        .header(reqwest::header::ORIGIN, origin)
+        .send()
+        .await
+        .map_err(describe_owned)?;
+    let h = res.headers();
+    Ok((
+        h.get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        h.get(reqwest::header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
+    ))
+}
+
 /// 압축을 풀지 않는 클라이언트로 요청해 (상태, Content-Encoding) 을 본다.
 pub async fn raw_encoding(
     ua: &str,
@@ -1054,6 +1102,42 @@ mod tests {
                 .await
                 .unwrap(),
             (200, None)
+        );
+        let (_s3, moved) = serve(
+            "/moved",
+            ResponseTemplate::new(301)
+                .insert_header("location", "https://b.com/")
+                .insert_header("strict-transport-security", "max-age=1")
+                .insert_header("access-control-allow-origin", "https://o.invalid")
+                .insert_header("access-control-allow-credentials", "true"),
+        )
+        .await;
+        assert_eq!(
+            first_hop("t", Duration::from_secs(5), &moved)
+                .await
+                .unwrap(),
+            (301, Some("https://b.com/".into()), true)
+        );
+        let no_redirect = Client::builder().redirect(Policy::none()).build().unwrap();
+        assert_eq!(
+            cors_probe(&no_redirect, &moved, "https://o.invalid")
+                .await
+                .unwrap(),
+            (Some("https://o.invalid".into()), true)
+        );
+        assert!(
+            first_hop(
+                "t",
+                Duration::from_secs(5),
+                &Url::parse("http://127.0.0.1:9/").unwrap()
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            cors_probe(&client(), &Url::parse("http://127.0.0.1:9/").unwrap(), "x")
+                .await
+                .is_err()
         );
         let (_s2, gz) = serve(
             "/gz",

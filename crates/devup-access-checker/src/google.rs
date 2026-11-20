@@ -56,6 +56,8 @@ pub struct GoogleFacts {
     pub itunes_meta_outside_head: bool,
     /// 본문에서 가장 많이 쓴 문자 체계
     pub body_script: Option<&'static str>,
+    /// `<link rel="alternate" media="…">` 의 별도 모바일 URL
+    pub mobile_alternate: Option<String>,
 }
 
 fn push(v: &mut Vec<String>, s: &str) {
@@ -84,6 +86,14 @@ pub fn extract(doc: &Html, html: &str, base: &Url) -> GoogleFacts {
         let rels: Vec<&str> = rel.split_ascii_whitespace().collect();
         if e.attr("data-nosnippet").is_some() && !matches!(name, "span" | "div" | "section") {
             push(&mut f.data_nosnippet_invalid, name);
+        }
+        if name == "link"
+            && rels.contains(&"alternate")
+            && get("hreflang").is_none()
+            && get("media").is_some_and(|m| m.contains("max-width") || m.contains("handheld"))
+            && f.mobile_alternate.is_none()
+        {
+            f.mobile_alternate = get("href").map(str::to_string);
         }
         if name == "link"
             && rels.contains(&"alternate")
@@ -244,7 +254,8 @@ mod tests {
     fn extracts_signals() {
         let base = Url::parse("https://a.com/").unwrap();
         let html = r#"<html><head><link rel="alternate" hreflang="en" href="https://a.com/en" media="only screen">
-<link rel="alternate" hreflang="ko" href="/ko"><link rel="prev" href="/p1"><meta name="apple-itunes-app" content="app-id=1"></head>
+<link rel="alternate" hreflang="ko" href="/ko"><link rel="prev" href="/p1">
+<link rel="alternate" media="only screen and (max-width: 640px)" href="https://m.a.com/"><link rel="alternate" media="print" href="/print"><meta name="apple-itunes-app" content="app-id=1"></head>
 <body><p data-nosnippet>x</p><span data-nosnippet>ok</span><img data-src="a.jpg"><img src="b.tiff?x=1"><img src="c.webp"><img src="data:image/png;base64,x">
 <picture><source srcset="d.avif"></picture><picture><img src="e.png"></picture>
 <p style="font-size:0">숨김</p><a href="/x" style="text-indent:-9999px"></a><div style="opacity:0"><span>안쪽</span></div>
@@ -273,6 +284,7 @@ mod tests {
         assert_eq!((f.yandex_noindex_open, f.yandex_noindex_close), (2, 1));
         assert!(!f.itunes_meta_outside_head);
         assert_eq!(f.body_script, Some("hangul"));
+        assert_eq!(f.mobile_alternate.as_deref(), Some("https://m.a.com/"));
         let html = r#"<html><body><meta name="apple-itunes-app" content="x"></body></html>"#;
         assert!(extract(&Html::parse_document(html), html, &base).itunes_meta_outside_head);
     }

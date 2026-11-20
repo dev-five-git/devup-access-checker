@@ -35,6 +35,7 @@ mod signals;
 mod sitemap;
 mod spec;
 mod trust;
+mod vulnjs;
 
 use std::time::{Duration, Instant};
 
@@ -804,16 +805,63 @@ impl Checker {
                 }))
                 .await
             };
+            let statement = async {
+                if !opts.check_links {
+                    return None;
+                }
+                let raw = facts.aria.statement_links.first()?;
+                let u = facts.link_base(&base).join(raw).ok()?;
+                Some((u.to_string(), fetch::probe_status_body(&probe, &u).await))
+            };
+            let mobile_alt = async {
+                if !opts.check_links {
+                    return None;
+                }
+                let raw = facts.google.mobile_alternate.as_deref()?;
+                let u = facts.link_base(&base).join(raw).ok()?;
+                Some((u.to_string(), fetch::probe_page(&probe, &u).await))
+            };
+            let cors = async {
+                if !opts.check_transport {
+                    return None;
+                }
+                Some(fetch::cors_probe(&probe, &base, checks::CORS_PROBE_ORIGIN).await)
+            };
+            let http_first_hop = async {
+                if !opts.check_transport {
+                    return None;
+                }
+                let mut http = base.clone();
+                let _ = http.set_scheme("http");
+                Some(
+                    fetch::first_hop(
+                        &opts.user_agent,
+                        opts.probe_timeout.min(Duration::from_secs(5)),
+                        &http,
+                    )
+                    .await,
+                )
+            };
+            let apple_touch = async {
+                if !opts.check_links {
+                    return None;
+                }
+                let raw = facts.apple_touch_icon.as_deref()?;
+                let u = facts.link_base(&base).join(raw).ok()?;
+                Some(image_info(&probe, &u).await)
+            };
             let gpc_url = at("/.well-known/gpc.json");
             let gpc = fetch::probe_file(&probe, &gpc_url, Json);
             let (
                 (feed, bing, not_found_chain, indexnow),
                 (llms_subpath, agent_card, robots_chain),
                 (change_password, gpc, conditional, asset_encodings),
+                (statement, mobile_alternate, cors, http_first_hop, apple_touch_image),
             ) = tokio::join!(
                 async { tokio::join!(feed, bing, not_found_chain, indexnow) },
                 async { tokio::join!(llms_subpath, agent_card, robots_chain) },
                 async { tokio::join!(change_password, gpc, conditional, asset_encodings) },
+                async { tokio::join!(statement, mobile_alt, cors, http_first_hop, apple_touch) },
             );
             checks::SearchProbes {
                 llms_subpath,
@@ -822,6 +870,12 @@ impl Checker {
                 gpc: Some(gpc),
                 conditional,
                 asset_encodings,
+                statement,
+                mobile_alternate,
+                cors,
+                http_first_hop,
+                apple_touch_image,
+                manifest_icon: None,
                 robots_chain,
                 feed,
                 bing_site_auth: Some(bing),
@@ -870,6 +924,17 @@ impl Checker {
             search_fut,
         );
         search.chain_robots = chain_robots;
+        // manifest 에서 가장 크게 선언된 아이콘의 실제 크기 (manifest 를 받은 뒤라 따로 요청)
+        if let Some(Ok((_, Some(json)))) = &manifest
+            && let Some(manifest_url) = facts
+                .manifest
+                .as_deref()
+                .and_then(|m| facts.link_base(&base).join(m).ok())
+            && let Some((declared, src)) = largest_icon(json)
+            && let Ok(u) = manifest_url.join(&src)
+        {
+            search.manifest_icon = Some((declared, image_info(&probe, &u).await));
+        }
         let well_known = checks::WellKnown {
             favicon_ico,
             apple_touch_icon,
@@ -935,6 +1000,44 @@ impl Checker {
             checks,
         })
     }
+}
+
+/// 이미지를 받아 크기를 읽는다.
+async fn image_info(probe: &reqwest::Client, url: &Url) -> Result<checks::ImageInfo, String> {
+    fetch::fetch_bytes(probe, url, 2 * 1024 * 1024).await.map(
+        |(status, content_type, bytes, truncated)| {
+            let size = imagesize::blob_size(&bytes).ok();
+            checks::ImageInfo {
+                url: url.to_string(),
+                status,
+                content_type,
+                bytes: bytes.len(),
+                truncated,
+                width: size.map(|s| s.width),
+                height: size.map(|s| s.height),
+            }
+        },
+    )
+}
+
+/// manifest icons 중 가장 크게 선언된 것의 ("WxH", src).
+fn largest_icon(json: &serde_json::Value) -> Option<(String, String)> {
+    json.get("icons")?
+        .as_array()?
+        .iter()
+        .filter_map(|i| {
+            let src = i.get("src")?.as_str()?.to_string();
+            let size = i
+                .get("sizes")?
+                .as_str()?
+                .split_ascii_whitespace()
+                .next()?
+                .to_ascii_lowercase();
+            let (w, h) = size.split_once('x')?;
+            Some((w.parse::<u64>().ok()? * h.parse::<u64>().ok()?, size, src))
+        })
+        .max_by_key(|(area, _, _)| *area)
+        .map(|(_, size, src)| (size, src))
 }
 
 /// www 변형 호스트를 요청해 본다. 변형이 없으면(IP·단일 레이블 호스트) None.

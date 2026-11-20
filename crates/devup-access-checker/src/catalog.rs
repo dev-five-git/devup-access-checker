@@ -1549,6 +1549,16 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Accessibility,
         "summary 의 display 변경",
     ),
+    (
+        "accessibility.statement_feedback",
+        Accessibility,
+        "접근성 성명 피드백 수단 (메일·전화·양식)",
+    ),
+    (
+        "accessibility.definition_list_duplicate_terms",
+        Accessibility,
+        "같은 dl 안에서 반복된 dt",
+    ),
     ("trust.privacy_policy", Trust, "개인정보처리방침 링크"),
     ("trust.terms", Trust, "이용약관 링크"),
     ("trust.phone", Trust, "전화번호 링크 (tel:)"),
@@ -1777,6 +1787,16 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "인라인 이벤트 핸들러 (onclick 등)",
     ),
     (
+        "security.cors_reflects_origin_credentials",
+        Security,
+        "CORS Origin 반사 + 자격증명 허용",
+    ),
+    (
+        "security.vulnerable_js_libraries",
+        Security,
+        "알려진 취약 버전 JS 라이브러리",
+    ),
+    (
         "performance.static_asset_cache",
         Performance,
         "정적 리소스 Cache-Control",
@@ -1852,6 +1872,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "crawling.ua_access.daum",
         Crawling,
         "검색 크롤러 UA 응답 (daum)",
+    ),
+    (
+        "crawling.ua_access.googlebot_smartphone",
+        Crawling,
+        "검색 크롤러 UA 응답 (googlebot_smartphone)",
     ),
     ("crawling.feed_valid", Crawling, "피드 형식 유효 (RSS·Atom)"),
     ("crawling.feed_items", Crawling, "피드 item 수"),
@@ -1994,6 +2019,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "조건부 요청 304 지원",
     ),
     ("crawling.rel_next_prev", Crawling, "rel=next·prev"),
+    (
+        "crawling.dynamic_serving_without_vary",
+        Crawling,
+        "UA 별 다른 HTML 인데 Vary: User-Agent 없음",
+    ),
     ("geo.question_headings", Geo, "질문형 헤딩 (h2~h4)"),
     ("geo.lists", Geo, "목록 (항목 2개 이상 ul/ol, dl)"),
     ("geo.tables", Geo, "표"),
@@ -2208,6 +2238,21 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "meta.base_after_resources",
         Meta,
         "link·script 뒤에 온 base (또는 base 여러 개)",
+    ),
+    (
+        "meta.mobile_alternate_mismatch",
+        Meta,
+        "별도 모바일 URL 과 메타 불일치",
+    ),
+    (
+        "meta.apple_touch_icon_spec",
+        Meta,
+        "apple-touch-icon PNG 180×180",
+    ),
+    (
+        "meta.manifest_icon_size_mismatch",
+        Meta,
+        "manifest 아이콘의 선언 크기와 실제 크기 불일치",
     ),
     (
         "structured_data.hreflang_reciprocal",
@@ -2518,6 +2563,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Performance,
         "레거시 JS (Babel 변환·폴리필 흔적)",
     ),
+    (
+        "performance.html_only_headers",
+        Performance,
+        "HTML 이 아닌 응답의 HTML 전용 헤더",
+    ),
     ("site.pages_sampled", Site, "표본 페이지 수집"),
     ("site.failed_pages", Site, "표본 중 2xx 아닌 페이지"),
     ("site.duplicate_titles", Site, "페이지 간 중복 title"),
@@ -2642,6 +2692,21 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "transport.asset_content_type_mismatch",
         Transport,
         "JavaScript 가 아닌 Content-Type 의 JS",
+    ),
+    (
+        "transport.http_redirect_not_https_first",
+        Transport,
+        "http 가 https 가 아닌 곳으로 먼저 리다이렉트",
+    ),
+    (
+        "transport.http_redirect_off_host",
+        Transport,
+        "http 가 다른 호스트로 먼저 리다이렉트",
+    ),
+    (
+        "transport.hsts_over_http",
+        Transport,
+        "http 응답의 HSTS 헤더 (브라우저가 무시)",
     ),
 ];
 
