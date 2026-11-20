@@ -3234,6 +3234,151 @@ fn deep_checks(o: &mut Out, i: &Inputs) {
         None,
     );
 
+    const GENERIC_TITLES: &[&str] = &[
+        "untitled",
+        "untitled document",
+        "document",
+        "react app",
+        "vite app",
+        "vite + react",
+        "vite + react + ts",
+        "vite + vue",
+        "nuxt app",
+        "create next app",
+        "next.js",
+        "welcome",
+        "index",
+        "home",
+        "new tab",
+        "제목 없음",
+        "홈",
+    ];
+    let title_generic = match i.facts.title.as_deref() {
+        Some(t) => Presence::from_bool(GENERIC_TITLES.contains(&t.trim().to_lowercase().as_str())),
+        None => Presence::NotApplicable,
+    };
+    // ===== 접근성 (키보드·폼·표·랜드마크) ====
+    o.push(
+        "accessibility.custom_control_unfocusable",
+        Accessibility,
+        "초점을 받을 수 없는 커스텀 컨트롤 (role=button 등에 tabindex 없음)",
+        count_presence(m.custom_controls_unfocusable, m.custom_controls),
+        Some(json!({ "total": m.custom_controls, "unfocusable": m.custom_controls_unfocusable })),
+        None,
+    );
+    o.push(
+        "accessibility.custom_control_unnamed",
+        Accessibility,
+        "이름 없는 커스텀 컨트롤",
+        count_presence(m.custom_controls_unnamed, m.custom_controls),
+        Some(json!({ "total": m.custom_controls, "unnamed": m.custom_controls_unnamed })),
+        None,
+    );
+    o.push(
+        "accessibility.click_without_keyboard",
+        Accessibility,
+        "키보드로 쓸 수 없는 onclick 요소 (div·span 등)",
+        Presence::from_bool(m.click_without_keyboard > 0),
+        Some(json!(m.click_without_keyboard)),
+        Some("HTML onclick 속성 기준. 스크립트로 붙인 이벤트는 알 수 없음".into()),
+    );
+    o.push(
+        "accessibility.aria_required_attr_missing",
+        Accessibility,
+        "역할에 필요한 ARIA 속성 누락",
+        Presence::from_bool(!m.required_aria_missing.is_empty()),
+        list(&m.required_aria_missing),
+        None,
+    );
+    o.push(
+        "accessibility.dialog_unnamed",
+        Accessibility,
+        "이름 없는 대화상자 (dialog)",
+        count_presence(m.dialogs_unnamed, m.dialogs),
+        Some(json!({ "total": m.dialogs, "unnamed": m.dialogs_unnamed })),
+        None,
+    );
+    o.push(
+        "accessibility.fieldset_legend_missing",
+        Accessibility,
+        "legend 없는 fieldset",
+        count_presence(m.fieldsets_without_legend, m.fieldsets),
+        Some(json!({ "total": m.fieldsets, "missing": m.fieldsets_without_legend })),
+        None,
+    );
+    o.push(
+        "accessibility.radio_group_ungrouped",
+        Accessibility,
+        "fieldset·radiogroup 으로 묶이지 않은 라디오 그룹",
+        count_presence(m.radio_groups_ungrouped.len(), m.radio_groups),
+        list(&m.radio_groups_ungrouped),
+        None,
+    );
+    o.push(
+        "accessibility.autocomplete_invalid",
+        Accessibility,
+        "잘못된 autocomplete 값",
+        count_presence(m.autocomplete_invalid.len(), m.autocomplete_fields),
+        list(&m.autocomplete_invalid),
+        None,
+    );
+    o.push(
+        "accessibility.empty_table_headers",
+        Accessibility,
+        "비어 있는 표 제목 셀 (th)",
+        count_presence(m.empty_table_headers, m.table_headers),
+        Some(json!({ "total": m.table_headers, "empty": m.empty_table_headers })),
+        None,
+    );
+    o.push(
+        "accessibility.scope_invalid",
+        Accessibility,
+        "잘못된 scope 속성",
+        count_presence(m.scope_invalid, m.scope_attrs),
+        Some(json!({ "total": m.scope_attrs, "invalid": m.scope_invalid })),
+        Some("th 가 아닌 요소의 scope 또는 row·col·rowgroup·colgroup 이 아닌 값".into()),
+    );
+    o.push(
+        "accessibility.multiple_main",
+        Accessibility,
+        "main 랜드마크 중복",
+        count_presence(usize::from(m.main_landmarks > 1), m.main_landmarks),
+        Some(json!(m.main_landmarks)),
+        None,
+    );
+    o.push(
+        "accessibility.unnamed_repeated_landmarks",
+        Accessibility,
+        "이름 없이 반복되는 nav·aside 랜드마크",
+        Presence::from_bool(!m.unnamed_repeated_landmarks.is_empty()),
+        list(&m.unnamed_repeated_landmarks),
+        None,
+    );
+    o.push(
+        "accessibility.redundant_alt",
+        Accessibility,
+        "중복 표현이 든 alt (\"이미지\", \"image of\" 등)",
+        count_presence(m.redundant_alts.len(), m.alt_texts),
+        list(&m.redundant_alts),
+        None,
+    );
+    o.push(
+        "accessibility.empty_summary",
+        Accessibility,
+        "비어 있는 details summary",
+        count_presence(m.empty_summaries, m.summaries),
+        Some(json!({ "total": m.summaries, "empty": m.empty_summaries })),
+        None,
+    );
+    o.push(
+        "accessibility.page_title_generic",
+        Accessibility,
+        "기본값 그대로인 페이지 제목 (\"React App\" 등)",
+        title_generic,
+        i.facts.title.as_deref().map(|t| json!(t)),
+        None,
+    );
+
     // ===== 성능 =====
     o.push(
         "performance.lcp_image_lazy",
@@ -4065,6 +4210,36 @@ mod tests {
                 .unwrap()
                 .to_string()
                 .contains("utf-8")
+        );
+    }
+
+    #[test]
+    fn keyboard_and_title_items() {
+        let mut fx = Fx::failing();
+        let html = r#"<html><head><title>React App</title></head><body>
+<div role="button">x</div><main></main><main></main></body></html>"#;
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let c = fx.run();
+        for id in [
+            "accessibility.custom_control_unfocusable",
+            "accessibility.page_title_generic",
+            "accessibility.multiple_main",
+        ] {
+            assert_eq!(get(&c, id).presence, Presence::Present, "{id}");
+        }
+        assert_eq!(
+            get(&c, "accessibility.dialog_unnamed").presence,
+            Presence::NotApplicable
+        );
+        fx.facts = crate::html::extract("<html><body></body></html>", &fx.page.final_url);
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "accessibility.page_title_generic").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "accessibility.multiple_main").presence,
+            Presence::NotApplicable
         );
     }
 }

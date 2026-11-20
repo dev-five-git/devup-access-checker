@@ -316,6 +316,21 @@ Rust 1.88 이상 (CI에서 확인).
 | `accessibility.timed_refresh` | 시간 제한 자동 새로고침 (meta refresh 지연) |
 | `accessibility.duplicate_accesskeys` | 중복 accesskey |
 | `accessibility.presentation_focusable` | 초점을 받는 요소의 role=presentation/none |
+| `accessibility.custom_control_unfocusable` | 초점을 받을 수 없는 커스텀 컨트롤 (role=button 등에 tabindex 없음) |
+| `accessibility.custom_control_unnamed` | 이름 없는 커스텀 컨트롤 |
+| `accessibility.click_without_keyboard` | 키보드로 쓸 수 없는 onclick 요소 (div·span 등) |
+| `accessibility.aria_required_attr_missing` | 역할에 필요한 ARIA 속성 누락 |
+| `accessibility.dialog_unnamed` | 이름 없는 대화상자 (dialog) |
+| `accessibility.fieldset_legend_missing` | legend 없는 fieldset |
+| `accessibility.radio_group_ungrouped` | fieldset·radiogroup 으로 묶이지 않은 라디오 그룹 |
+| `accessibility.autocomplete_invalid` | 잘못된 autocomplete 값 |
+| `accessibility.empty_table_headers` | 비어 있는 표 제목 셀 (th) |
+| `accessibility.scope_invalid` | 잘못된 scope 속성 |
+| `accessibility.multiple_main` | main 랜드마크 중복 |
+| `accessibility.unnamed_repeated_landmarks` | 이름 없이 반복되는 nav·aside 랜드마크 |
+| `accessibility.redundant_alt` | 중복 표현이 든 alt ("이미지", "image of" 등) |
+| `accessibility.empty_summary` | 비어 있는 details summary |
+| `accessibility.page_title_generic` | 기본값 그대로인 페이지 제목 ("React App" 등) |
 | `trust.privacy_policy` | 개인정보처리방침 링크 |
 | `trust.terms` | 이용약관 링크 |
 | `trust.phone` | 전화번호 링크 (tel:) |

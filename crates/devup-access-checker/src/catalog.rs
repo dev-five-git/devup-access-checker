@@ -673,6 +673,81 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Accessibility,
         "초점을 받는 요소의 role=presentation/none",
     ),
+    (
+        "accessibility.custom_control_unfocusable",
+        Accessibility,
+        "초점을 받을 수 없는 커스텀 컨트롤 (role=button 등에 tabindex 없음)",
+    ),
+    (
+        "accessibility.custom_control_unnamed",
+        Accessibility,
+        "이름 없는 커스텀 컨트롤",
+    ),
+    (
+        "accessibility.click_without_keyboard",
+        Accessibility,
+        "키보드로 쓸 수 없는 onclick 요소 (div·span 등)",
+    ),
+    (
+        "accessibility.aria_required_attr_missing",
+        Accessibility,
+        "역할에 필요한 ARIA 속성 누락",
+    ),
+    (
+        "accessibility.dialog_unnamed",
+        Accessibility,
+        "이름 없는 대화상자 (dialog)",
+    ),
+    (
+        "accessibility.fieldset_legend_missing",
+        Accessibility,
+        "legend 없는 fieldset",
+    ),
+    (
+        "accessibility.radio_group_ungrouped",
+        Accessibility,
+        "fieldset·radiogroup 으로 묶이지 않은 라디오 그룹",
+    ),
+    (
+        "accessibility.autocomplete_invalid",
+        Accessibility,
+        "잘못된 autocomplete 값",
+    ),
+    (
+        "accessibility.empty_table_headers",
+        Accessibility,
+        "비어 있는 표 제목 셀 (th)",
+    ),
+    (
+        "accessibility.scope_invalid",
+        Accessibility,
+        "잘못된 scope 속성",
+    ),
+    (
+        "accessibility.multiple_main",
+        Accessibility,
+        "main 랜드마크 중복",
+    ),
+    (
+        "accessibility.unnamed_repeated_landmarks",
+        Accessibility,
+        "이름 없이 반복되는 nav·aside 랜드마크",
+    ),
+    (
+        "accessibility.redundant_alt",
+        Accessibility,
+        "중복 표현이 든 alt (\"이미지\", \"image of\" 등)",
+    ),
+    (
+        "accessibility.empty_summary",
+        Accessibility,
+        "비어 있는 details summary",
+    ),
+    (
+        "accessibility.page_title_generic",
+        Accessibility,
+        "기본값 그대로인 페이지 제목 (\"React App\" 등)",
+    ),
     ("trust.privacy_policy", Trust, "개인정보처리방침 링크"),
     ("trust.terms", Trust, "이용약관 링크"),
     ("trust.phone", Trust, "전화번호 링크 (tel:)"),
