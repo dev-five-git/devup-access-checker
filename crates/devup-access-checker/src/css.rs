@@ -20,6 +20,63 @@ static MOTION: LazyLock<Regex> = LazyLock::new(|| {
 });
 static JUSTIFY: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"(?i)text-align\s*:\s*justify").unwrap());
+static CONTENT_VISIBILITY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)content-visibility\s*:\s*auto").unwrap());
+static BLOCK: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\{([^{}]*)\}").unwrap());
+static SUMMARY: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)(?:^|[},\s])summary\s*(?:,[^{]*)?\{[^}]*?display\s*:\s*([a-z-]+)").unwrap()
+});
+static KEYFRAMES: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)@(?:-webkit-|-moz-)?keyframes\b[^{]*\{").unwrap());
+static LAYOUT_PROP: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[;{\s])(?:width|height|top|left|right|bottom|margin(?:-[a-z]+)?|padding(?:-[a-z]+)?|font-size|border-width)\s*:").unwrap()
+});
+
+/// 레이아웃·페인트를 다시 하게 만드는 속성을 움직이는 @keyframes 수 (webhint detect-css-reflows).
+fn layout_keyframes(css: &str) -> usize {
+    KEYFRAMES
+        .find_iter(css)
+        .filter(|m| {
+            // 여는 중괄호부터 짝이 맞는 닫는 중괄호까지
+            let mut depth = 1usize;
+            let rest = &css[m.end()..];
+            let end = rest
+                .char_indices()
+                .find(|(_, c)| {
+                    match c {
+                        '{' => depth += 1,
+                        '}' => depth -= 1,
+                        _ => {}
+                    }
+                    depth == 0
+                })
+                .map_or(rest.len(), |(i, _)| i);
+            LAYOUT_PROP.is_match(&rest[..end])
+        })
+        .count()
+}
+
+/// 선언 블록 하나에서 접두사 없는 속성 뒤에 같은 속성의 접두사 버전이 오는 수.
+fn prefix_after_standard(block: &str) -> usize {
+    let props: Vec<String> = block
+        .split(';')
+        .filter_map(|d| {
+            d.split_once(':')
+                .map(|(p, _)| p.trim().to_ascii_lowercase())
+        })
+        .collect();
+    props
+        .iter()
+        .enumerate()
+        .filter(|(i, p)| {
+            ["-webkit-", "-moz-", "-ms-", "-o-"].iter().any(|x| {
+                p.strip_prefix(x)
+                    .is_some_and(|std| props[..*i].iter().any(|q| q == std))
+            })
+        })
+        .count()
+}
+
 static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").unwrap());
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -46,6 +103,16 @@ pub struct CssFacts {
     pub justify: usize,
     /// `text-decoration: blink` 선언 수
     pub blink: usize,
+    /// WOFF2 없이 ttf·otf·eot·svg 만 쓰는 @font-face 수
+    pub legacy_fonts: usize,
+    /// `content-visibility: auto` 선언 수
+    pub content_visibility: usize,
+    /// 레이아웃·페인트 속성을 움직이는 @keyframes 수
+    pub layout_keyframes: usize,
+    /// 접두사 없는 속성 뒤에 온 접두사 속성 수 (webhint css-prefix-order)
+    pub prefix_after_standard: usize,
+    /// summary 의 display 를 list-item 외로 바꾼 규칙 수
+    pub summary_display: usize,
 }
 
 impl CssFacts {
@@ -62,6 +129,11 @@ impl CssFacts {
         self.reduced_motion |= other.reduced_motion;
         self.justify += other.justify;
         self.blink += other.blink;
+        self.legacy_fonts += other.legacy_fonts;
+        self.content_visibility += other.content_visibility;
+        self.layout_keyframes += other.layout_keyframes;
+        self.prefix_after_standard += other.prefix_after_standard;
+        self.summary_display += other.summary_display;
     }
 }
 
@@ -83,9 +155,27 @@ pub fn analyze(css: &str) -> CssFacts {
         reduced_motion: css.to_ascii_lowercase().contains("prefers-reduced-motion"),
         justify: JUSTIFY.find_iter(&css).count(),
         blink: crate::aria::css_blink(&css),
+        content_visibility: CONTENT_VISIBILITY.find_iter(&css).count(),
+        layout_keyframes: layout_keyframes(&css),
+        prefix_after_standard: BLOCK
+            .captures_iter(&css)
+            .map(|c| prefix_after_standard(&c[1]))
+            .sum(),
+        summary_display: SUMMARY
+            .captures_iter(&css)
+            .filter(|c| !c[1].eq_ignore_ascii_case("list-item"))
+            .count(),
         ..Default::default()
     };
     for c in FONT_FACE.captures_iter(&css) {
+        let body = c[1].to_ascii_lowercase();
+        if !body.contains("woff2")
+            && [".ttf", ".otf", ".eot", ".svg", "truetype", "opentype"]
+                .iter()
+                .any(|x| body.contains(x))
+        {
+            f.legacy_fonts += 1;
+        }
         f.font_faces += 1;
         if !c[1].to_ascii_lowercase().contains("font-display") {
             f.font_faces_without_display += 1;
@@ -119,6 +209,11 @@ mod tests {
                 reduced_motion: false,
                 justify: 0,
                 blink: 0,
+                legacy_fonts: 0,
+                content_visibility: 0,
+                layout_keyframes: 0,
+                prefix_after_standard: 0,
+                summary_display: 0,
             }
         );
     }
@@ -146,5 +241,29 @@ mod tests {
         let mut g = analyze("x{TEXT-ALIGN:JUSTIFY}");
         g.merge(&f);
         assert_eq!((g.animations, g.reduced_motion, g.justify), (2, true, 2));
+    }
+
+    #[test]
+    fn performance_and_compat_rules() {
+        let f = analyze(
+            "@font-face{src:url(a.woff2) format('woff2'), url(a.ttf)} @font-face{src:url(b.eot)}\
+             .x{content-visibility:auto} @keyframes grow{from{width:0}to{width:10px}} @-webkit-keyframes fade{0%{opacity:0}100%{opacity:1}}\
+             @keyframes broken{from{top:0}\
+             .y{transition:all 1s;-webkit-transition:all 1s} .z{-webkit-box-shadow:none;box-shadow:none}\
+             details summary{display:block} summary{display:list-item}",
+        );
+        assert_eq!(
+            (
+                f.legacy_fonts,
+                f.content_visibility,
+                f.layout_keyframes,
+                f.prefix_after_standard,
+                f.summary_display
+            ),
+            (1, 1, 2, 1, 1)
+        );
+        let mut g = analyze("");
+        g.merge(&f);
+        assert_eq!(g.layout_keyframes, 2);
     }
 }

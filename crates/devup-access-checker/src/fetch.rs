@@ -612,22 +612,78 @@ pub async fn fetch_bytes(
     Ok((status, ct, buf, false))
 }
 
-/// 본문을 보관하지 않고 바이트 수만 센다 (`max` 에서 멈춤). 2xx 가 아니면 오류.
-pub async fn count_bytes(client: &Client, url: &Url, max: usize) -> Result<usize, String> {
+/// 하위 리소스 표본: 상태·최종 URL·Content-Type·전체 크기·앞부분 본문.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceSample {
+    pub status: u16,
+    pub final_url: String,
+    pub content_type: Option<String>,
+    /// 받은 바이트 (상한 `max` 에서 멈춤)
+    pub bytes: usize,
+    /// 앞 `keep` 바이트
+    pub body: Vec<u8>,
+}
+
+/// 리소스를 받아 상태와 크기, 앞부분 본문을 돌려준다 (상태가 오류여도 Ok).
+pub async fn sample_resource(
+    client: &Client,
+    url: &Url,
+    max: usize,
+    keep: usize,
+) -> Result<ResourceSample, String> {
     let mut res = send_get(client, url.as_str())
         .await
         .map_err(describe_owned)?;
-    if !res.status().is_success() {
-        return Err(format!("HTTP {}", res.status().as_u16()));
-    }
-    let mut n = 0;
+    let mut s = ResourceSample {
+        status: res.status().as_u16(),
+        final_url: res.url().to_string(),
+        content_type: res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        ..Default::default()
+    };
     while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
-        n += chunk.len();
-        if n >= max {
-            return Ok(max);
+        s.bytes += chunk.len();
+        if s.body.len() < keep {
+            s.body
+                .extend_from_slice(&chunk[..chunk.len().min(keep - s.body.len())]);
+        }
+        if s.bytes >= max {
+            s.bytes = max;
+            break;
         }
     }
-    Ok(n)
+    Ok(s)
+}
+
+/// 압축을 풀지 않는 클라이언트로 요청해 (상태, Content-Encoding) 을 본다.
+pub async fn raw_encoding(
+    ua: &str,
+    timeout: Duration,
+    url: &Url,
+) -> Result<(u16, Option<String>), String> {
+    let client = Client::builder()
+        .user_agent(ua)
+        .timeout(timeout)
+        .gzip(false)
+        .brotli(false)
+        .build()
+        .expect("http client");
+    let res = client
+        .get(url.as_str())
+        .header(reqwest::header::ACCEPT_ENCODING, "gzip, br")
+        .send()
+        .await
+        .map_err(describe_owned)?;
+    Ok((
+        res.status().as_u16(),
+        res.headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+    ))
 }
 
 /// 하위 sitemap 을 받아 URL 목록을 돌려준다. `.xml.gz` (gzip) 도 풀어서 읽는다.
@@ -979,7 +1035,7 @@ mod tests {
         let (status, body) = probe_status_body(&client(), &url).await.unwrap();
         assert_eq!((status, body.len()), (404, 65_536));
 
-        // fetch_bytes / count_bytes 상한
+        // fetch_bytes / sample_resource 상한
         let (_s, url) = serve(
             "/bin",
             ResponseTemplate::new(200).set_body_bytes(vec![1u8; 5000]),
@@ -987,7 +1043,36 @@ mod tests {
         .await;
         let (_, _, bytes, truncated) = fetch_bytes(&client(), &url, 100).await.unwrap();
         assert_eq!((bytes.len(), truncated), (100, true));
-        assert_eq!(count_bytes(&client(), &url, 100).await.unwrap(), 100);
+        let r = sample_resource(&client(), &url, 100, 10).await.unwrap();
+        assert_eq!((r.status, r.bytes, r.body.len()), (200, 100, 10));
+        let r = sample_resource(&client(), &url, 1_000_000, 10_000)
+            .await
+            .unwrap();
+        assert_eq!((r.bytes, r.body.len()), (5000, 5000));
+        assert_eq!(
+            raw_encoding("t", Duration::from_secs(5), &url)
+                .await
+                .unwrap(),
+            (200, None)
+        );
+        let (_s2, gz) = serve(
+            "/gz",
+            ResponseTemplate::new(200).insert_header("content-encoding", "gzip"),
+        )
+        .await;
+        assert_eq!(
+            raw_encoding("t", Duration::from_secs(5), &gz)
+                .await
+                .unwrap(),
+            (200, Some("gzip".into()))
+        );
+        let closed = Url::parse("http://127.0.0.1:9/").unwrap();
+        assert!(
+            raw_encoding("t", Duration::from_secs(5), &closed)
+                .await
+                .is_err()
+        );
+        assert!(sample_resource(&client(), &closed, 10, 10).await.is_err());
 
         // UA 요청은 앞 200KB 만 본다
         let (_s, url) = serve(

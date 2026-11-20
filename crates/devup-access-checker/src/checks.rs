@@ -183,6 +183,8 @@ pub struct PageWeight {
     pub large_images: Vec<(String, u64)>,
     /// [`LARGE_GIF_BYTES`] 를 넘는 GIF (움직이는 이미지는 동영상이 훨씬 작다)
     pub large_gifs: Vec<(String, u64)>,
+    /// JS 표본 (URL, 결과) — 상태·Content-Type·리다이렉트·본문 분석용
+    pub scripts: Vec<(String, Result<crate::fetch::ResourceSample, String>)>,
 }
 
 /// 큰 GIF 기준 (Lighthouse "효율적인 애니메이션 콘텐츠" 와 같은 100KB)
@@ -248,6 +250,9 @@ pub struct ImageInfo {
     pub height: Option<usize>,
 }
 
+/// (CSS·JS URL, (상태, Content-Encoding))
+pub type AssetEncoding = (String, Result<(u16, Option<String>), String>);
+
 /// 검색엔진 가이드 대조로 추가 요청한 결과.
 #[derive(Debug, Default)]
 pub struct SearchProbes {
@@ -263,6 +268,8 @@ pub struct SearchProbes {
     pub gpc: Option<FileProbe>,
     /// ETag·Last-Modified 조건부 요청 상태. None = 두 헤더가 없음
     pub conditional: Option<Result<u16, String>>,
+    /// 압축을 풀지 않고 받은 CSS·JS 표본의 (URL, (상태, Content-Encoding))
+    pub asset_encodings: Vec<AssetEncoding>,
     /// 첫 RSS/Atom 피드 본문. None = 피드 링크 없음 또는 수행 안 함
     pub feed: Option<FileProbe>,
     /// `/BingSiteAuth.xml`. None = 수행 안 함
@@ -1559,6 +1566,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     security_spec_checks(&mut o, i);
     google_spec_checks(&mut o, i, &robots);
     aria_spec_checks(&mut o, i);
+    quality_spec_checks(&mut o, i);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -7852,6 +7860,523 @@ fn aria_spec_checks(o: &mut Out, i: &Inputs) {
     );
 }
 
+/// 레거시 JS 흔적 (Babel 헬퍼·폴리필).
+const LEGACY_JS: &[&str] = &[
+    "regeneratorRuntime",
+    "_classCallCheck(",
+    "_createClass(",
+    "_inherits(",
+    "_asyncToGenerator(",
+    "_toConsumableArray(",
+    "core-js/modules",
+    "__core-js_shared__",
+    "Array.prototype.includes||",
+    "Object.assign||",
+];
+
+/// 줄 앞 들여쓰기·빈 줄 바이트 (minify 로 줄일 수 있는 양의 추정).
+fn indentation_bytes(text: &str) -> usize {
+    text.lines()
+        .map(|l| l.len() - l.trim_start().len() + 1)
+        .sum()
+}
+
+/// Nu HTML Checker·HTMLHint·webhint·DevTools 대조 항목.
+fn quality_spec_checks(o: &mut Out, i: &Inputs) {
+    use Category::*;
+    let f = i.facts;
+    let q = &f.quality;
+    let h = &i.page.headers;
+    let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
+    let flag = |b: bool, applicable: bool| {
+        if applicable {
+            Presence::from_bool(b)
+        } else {
+            Presence::NotApplicable
+        }
+    };
+    let ext_css = i.extended.external_css.as_ref();
+    let css_sum = |g: fn(&crate::css::CssFacts) -> usize| {
+        g(&f.extra.inline_css) + ext_css.map_or(0, |c| g(&c.facts))
+    };
+    let equiv_bad: Vec<String> = f
+        .sec
+        .http_equiv
+        .iter()
+        .filter(|e| {
+            !matches!(
+                e.as_str(),
+                "refresh"
+                    | "default-style"
+                    | "content-security-policy"
+                    | "x-ua-compatible"
+                    | "content-type"
+            )
+        })
+        .cloned()
+        .collect();
+    let link_preload: Vec<String> = header(h, "link")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|p| {
+            let l = p.to_ascii_lowercase();
+            l.contains("rel=preload")
+                || l.contains("rel=\"preload")
+                || l.contains("preconnect")
+                || l.contains("modulepreload")
+        })
+        .map(|p| p.trim().to_string())
+        .collect();
+    let encodings = &i.extended.search.asset_encodings;
+    let encodings_ok = encodings
+        .iter()
+        .filter(|(_, r)| r.as_ref().is_ok_and(|(s, _)| (200..300).contains(s)))
+        .count();
+    let uncompressed: Vec<String> = encodings
+        .iter()
+        .filter(|(_, r)| {
+            r.as_ref()
+                .is_ok_and(|(s, e)| (200..300).contains(s) && e.is_none())
+        })
+        .map(|(u, _)| u.clone())
+        .collect();
+    let scripts: Vec<&(String, Result<crate::fetch::ResourceSample, String>)> = i
+        .extended
+        .page_weight
+        .iter()
+        .flat_map(|w| w.scripts.iter())
+        .collect();
+    let ok_scripts: Vec<(&String, &crate::fetch::ResourceSample)> = scripts
+        .iter()
+        .filter_map(|(u, r)| {
+            r.as_ref()
+                .ok()
+                .filter(|s| (200..300).contains(&s.status))
+                .map(|s| (u, s))
+        })
+        .collect();
+    let scripts_ok = ok_scripts.len();
+    let bad_type: Vec<String> = ok_scripts
+        .iter()
+        .filter(|(_, s)| {
+            let ct = s
+                .content_type
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            !(ct.contains("javascript") || ct.contains("ecmascript"))
+        })
+        .map(|(u, s)| format!("{u} ({})", s.content_type.as_deref().unwrap_or("없음")))
+        .collect();
+    let broken: Vec<String> = scripts
+        .iter()
+        .filter_map(|(u, r)| {
+            r.as_ref()
+                .ok()
+                .filter(|s| matches!(s.status, 404 | 410 | 500..=599))
+                .map(|s| format!("{u} ({})", s.status))
+        })
+        .collect();
+    let css_failed = ext_css.map_or(0, |c| c.failed);
+    let sampled = !scripts.is_empty() || ext_css.is_some_and(|c| c.checked + c.failed > 0);
+    let redirected: Vec<String> = ok_scripts
+        .iter()
+        .filter(|(u, s)| s.final_url.trim_end_matches('/') != u.trim_end_matches('/'))
+        .map(|(u, _)| (*u).clone())
+        .collect();
+    let unminified: Vec<String> = ok_scripts
+        .iter()
+        .filter(|(_, s)| {
+            let text = String::from_utf8_lossy(&s.body);
+            let waste = indentation_bytes(&text);
+            waste > 2048 && waste * 10 > text.len()
+        })
+        .map(|(u, _)| (*u).clone())
+        .collect();
+    let legacy: Vec<String> = ok_scripts
+        .iter()
+        .filter_map(|(u, s)| {
+            let text = String::from_utf8_lossy(&s.body);
+            let hits: Vec<&str> = LEGACY_JS
+                .iter()
+                .copied()
+                .filter(|p| text.contains(p))
+                .collect();
+            (!hits.is_empty()).then(|| format!("{u}: {}", hits.join(", ")))
+        })
+        .collect();
+    o.push(
+        "meta.http_equiv_invalid",
+        Meta,
+        "브라우저가 무시하는 http-equiv",
+        flag(!equiv_bad.is_empty(), !f.sec.http_equiv.is_empty()),
+        list(&equiv_bad),
+        Some(
+            "허용: refresh·default-style·content-security-policy·x-ua-compatible·content-type"
+                .into(),
+        ),
+    );
+    o.push(
+        "meta.base_after_resources",
+        Meta,
+        "link·script 뒤에 온 base (또는 base 여러 개)",
+        flag(q.base_after_resources || q.bases > 1, q.bases > 0),
+        Some(json!(q.bases)),
+        None,
+    );
+    o.push(
+        "accessibility.invalid_nesting",
+        Accessibility,
+        "허용되지 않는 요소 중첩",
+        Presence::from_bool(!q.invalid_nesting.is_empty()),
+        list(&q.invalid_nesting),
+        Some("Nu HTML Checker 금지 조상 규칙 (주요 쌍)".into()),
+    );
+    o.push(
+        "accessibility.phrasing_content_violation",
+        Accessibility,
+        "구문 전용 요소 안의 블록 요소",
+        Presence::from_bool(!q.phrasing_violations.is_empty()),
+        list(&q.phrasing_violations),
+        Some("button·label·span·heading 안의 div·p·ul 등".into()),
+    );
+    o.push(
+        "accessibility.form_conformance_errors",
+        Accessibility,
+        "폼 요소 적합성 오류",
+        flag(!q.form_errors.is_empty(), q.form_controls > 0),
+        list(&q.form_errors),
+        Some(
+            "required select·selected 중복·label 의 입력 여러 개·list·form 참조·autofocus 중복"
+                .into(),
+        ),
+    );
+    o.push(
+        "content.invalid_urls",
+        Content,
+        "형식이 잘못된 URL (공백·역슬래시·잘못된 % 인코딩)",
+        Presence::from_bool(!q.invalid_urls.is_empty()),
+        list(&q.invalid_urls),
+        None,
+    );
+    o.push(
+        "content.invalid_enum_attrs",
+        Content,
+        "명세에 없는 열거형 속성 값",
+        Presence::from_bool(!q.invalid_enums.is_empty()),
+        list(&q.invalid_enums),
+        Some("input type·button type·form method·loading·crossorigin 등".into()),
+    );
+    o.push(
+        "content.time_datetime_invalid",
+        Content,
+        "형식이 잘못된 time datetime",
+        flag(!q.invalid_times.is_empty(), q.times > 0),
+        list(&q.invalid_times),
+        None,
+    );
+    o.push(
+        "content.unknown_elements",
+        Content,
+        "HTML 에 없는 요소 (사용자 정의 요소 제외)",
+        Presence::from_bool(!q.unknown_elements.is_empty()),
+        list(&q.unknown_elements),
+        None,
+    );
+    o.push(
+        "content.text_not_nfc",
+        Content,
+        "NFC 로 정규화되지 않은 텍스트",
+        Presence::from_bool(q.non_nfc > 0),
+        Some(json!(q.non_nfc)),
+        Some("macOS 에서 붙여넣은 자모 분리 한글 등".into()),
+    );
+    o.push(
+        "structured_data.microdata_invalid",
+        StructuredData,
+        "잘못된 microdata (itemprop·itemref·itemtype)",
+        flag(
+            !q.microdata_errors.is_empty(),
+            q.microdata_items > 0 || !q.microdata_errors.is_empty(),
+        ),
+        list(&q.microdata_errors),
+        None,
+    );
+    o.push(
+        "content.section_without_heading",
+        Content,
+        "제목 없는 section·article",
+        count_presence(q.sections_without_heading, q.sections),
+        Some(json!(q.sections_without_heading)),
+        None,
+    );
+    o.push(
+        "performance.empty_src",
+        Performance,
+        "빈 src·href (페이지 자신을 다시 요청)",
+        Presence::from_bool(!q.empty_src.is_empty()),
+        list(&q.empty_src),
+        None,
+    );
+    o.push(
+        "performance.srcset_sizes_invalid",
+        Performance,
+        "srcset w 서술자에 sizes 누락 등",
+        Presence::from_bool(!q.srcset_errors.is_empty()),
+        list(&q.srcset_errors),
+        None,
+    );
+    o.push(
+        "performance.preload_invalid",
+        Performance,
+        "잘못된 preload (as 누락·글꼴 crossorigin 누락)",
+        flag(!q.preload_errors.is_empty(), q.preloads > 0),
+        list(&q.preload_errors),
+        None,
+    );
+    o.push(
+        "performance.script_attr_ineffective",
+        Performance,
+        "효과 없는·잘못된 script 속성",
+        Presence::from_bool(!q.script_attr_errors.is_empty()),
+        list(&q.script_attr_errors),
+        Some("인라인 script 의 async·defer 는 무시되어 렌더링을 막을 수 있음".into()),
+    );
+    o.push(
+        "performance.script_json_invalid",
+        Performance,
+        "importmap·speculationrules JSON 오류",
+        Presence::from_bool(!q.script_json_errors.is_empty()),
+        list(&q.script_json_errors),
+        None,
+    );
+    o.push(
+        "performance.speculation_rules",
+        Performance,
+        "Speculation Rules (prefetch·prerender)",
+        Presence::from_bool(q.speculation_rules || h.contains_key("speculation-rules")),
+        None,
+        None,
+    );
+    o.push(
+        "performance.excess_preconnect",
+        Performance,
+        "preconnect 4개 초과",
+        flag(
+            q.preconnect_origins.len() > 4,
+            !q.preconnect_origins.is_empty(),
+        ),
+        list(&q.preconnect_origins),
+        Some("Chrome DevTools: 4개 넘는 preconnect 는 경쟁을 일으킴".into()),
+    );
+    o.push(
+        "performance.preconnect_unused",
+        Performance,
+        "참조되지 않는 preconnect 출처",
+        flag(
+            !q.preconnect_unused.is_empty(),
+            !q.preconnect_origins.is_empty(),
+        ),
+        list(&q.preconnect_unused),
+        Some("HTML 속성 기준 (스크립트·CSS 가 쓰는 출처는 알 수 없음)".into()),
+    );
+    o.push(
+        "performance.preconnect_crossorigin_missing",
+        Performance,
+        "글꼴 출처 preconnect 의 crossorigin 누락",
+        Presence::from_bool(!q.preconnect_font_no_crossorigin.is_empty()),
+        list(&q.preconnect_font_no_crossorigin),
+        None,
+    );
+    o.push(
+        "performance.iframe_lazy",
+        Performance,
+        "loading=lazy 없는 iframe (첫 번째 제외)",
+        count_presence(q.iframes_not_lazy, q.iframes.saturating_sub(1)),
+        Some(json!({ "iframes": q.iframes, "notLazy": q.iframes_not_lazy })),
+        None,
+    );
+    o.push(
+        "performance.third_party_embeds",
+        Performance,
+        "무거운 서드파티 임베드 (파사드 후보)",
+        Presence::from_bool(!q.facade_embeds.is_empty()),
+        list(&q.facade_embeds),
+        Some("YouTube·Vimeo·채팅 위젯 등".into()),
+    );
+    o.push(
+        "performance.video_preload",
+        Performance,
+        "preload 를 줄이지 않은 video",
+        count_presence(q.videos_preload_heavy, q.videos),
+        Some(json!(q.videos_preload_heavy)),
+        Some("autoplay 가 아니면 preload=none·metadata 권장".into()),
+    );
+    o.push(
+        "performance.img_decoding",
+        Performance,
+        "decoding=async 이미지",
+        Presence::from_bool(q.img_decoding_async > 0),
+        Some(json!(q.img_decoding_async)),
+        None,
+    );
+    o.push(
+        "content.input_type_generic",
+        Content,
+        "이메일·전화 등에 type=text",
+        Presence::from_bool(!q.generic_inputs.is_empty()),
+        list(&q.generic_inputs),
+        Some("이름·id·autocomplete 기준 휴리스틱".into()),
+    );
+    o.push(
+        "content.form_method_missing",
+        Content,
+        "method 없는 form",
+        count_presence(q.forms_without_method, q.forms),
+        Some(json!(q.forms_without_method)),
+        None,
+    );
+    o.push(
+        "performance.inline_style_attrs",
+        Performance,
+        "style 속성 사용 요소",
+        Presence::from_bool(q.inline_styles > 0),
+        Some(json!(q.inline_styles)),
+        None,
+    );
+    o.push(
+        "security.inline_event_handlers",
+        Security,
+        "인라인 이벤트 핸들러 (onclick 등)",
+        Presence::from_bool(q.inline_handlers > 0),
+        Some(json!(q.inline_handlers)),
+        Some("엄격한 CSP 와 함께 쓸 수 없음".into()),
+    );
+    o.push(
+        "content.ad_blocker_class_names",
+        Content,
+        "광고 차단기에 가려지는 id·class",
+        Presence::from_bool(!q.ad_class_names.is_empty()),
+        list(&q.ad_class_names),
+        None,
+    );
+    o.push(
+        "content.attr_unsafe_chars",
+        Content,
+        "보이지 않는 제어 문자가 든 속성 값",
+        Presence::from_bool(!q.unsafe_attr_chars.is_empty()),
+        list(&q.unsafe_attr_chars),
+        None,
+    );
+    o.push(
+        "performance.legacy_font_formats",
+        Performance,
+        "WOFF2 없는 글꼴 (ttf·otf·eot)",
+        flag(
+            css_sum(|c| c.legacy_fonts) > 0,
+            css_sum(|c| c.font_faces) > 0,
+        ),
+        Some(json!(css_sum(|c| c.legacy_fonts))),
+        None,
+    );
+    o.push(
+        "performance.content_visibility",
+        Performance,
+        "content-visibility 사용",
+        Presence::from_bool(css_sum(|c| c.content_visibility) > 0),
+        None,
+        None,
+    );
+    o.push(
+        "performance.layout_animations",
+        Performance,
+        "레이아웃 속성을 움직이는 @keyframes",
+        Presence::from_bool(css_sum(|c| c.layout_keyframes) > 0),
+        Some(json!(css_sum(|c| c.layout_keyframes))),
+        Some("width·top·margin 등은 매 프레임 레이아웃을 다시 계산".into()),
+    );
+    o.push(
+        "performance.css_prefix_order",
+        Performance,
+        "표준 속성 뒤의 접두사 속성",
+        Presence::from_bool(css_sum(|c| c.prefix_after_standard) > 0),
+        Some(json!(css_sum(|c| c.prefix_after_standard))),
+        None,
+    );
+    o.push(
+        "accessibility.summary_display_changed",
+        Accessibility,
+        "summary 의 display 변경",
+        Presence::from_bool(css_sum(|c| c.summary_display) > 0),
+        None,
+        Some("list-item 이 아니면 펼침 표시가 사라짐".into()),
+    );
+    o.push(
+        "performance.server_timing",
+        Performance,
+        "Server-Timing 헤더",
+        Presence::from_bool(h.contains_key("server-timing")),
+        header(h, "server-timing").map(Value::from),
+        None,
+    );
+    o.push(
+        "performance.link_header_preload",
+        Performance,
+        "Link 헤더 preload·preconnect",
+        Presence::from_bool(!link_preload.is_empty()),
+        list(&link_preload),
+        Some("103 Early Hints 와 같은 효과".into()),
+    );
+    o.push(
+        "performance.asset_compression",
+        Performance,
+        "압축 없이 전달되는 CSS·JS",
+        flag(!uncompressed.is_empty(), encodings_ok > 0),
+        list(&uncompressed),
+        Some("압축을 풀지 않는 요청으로 표본 5개 확인".into()),
+    );
+    o.push(
+        "transport.asset_content_type_mismatch",
+        Transport,
+        "JavaScript 가 아닌 Content-Type 의 JS",
+        flag(!bad_type.is_empty(), scripts_ok > 0),
+        list(&bad_type),
+        None,
+    );
+    o.push(
+        "content.broken_resources",
+        Content,
+        "깨진 하위 리소스 (JS·CSS)",
+        flag(!broken.is_empty() || css_failed > 0, sampled),
+        Some(json!({ "scripts": broken, "cssFailed": css_failed })),
+        Some("표본 JS 의 4xx·5xx 와 받지 못한 CSS".into()),
+    );
+    o.push(
+        "performance.asset_redirects",
+        Performance,
+        "리다이렉트되는 JS",
+        flag(!redirected.is_empty(), scripts_ok > 0),
+        list(&redirected),
+        None,
+    );
+    o.push(
+        "performance.unminified_js",
+        Performance,
+        "압축(minify)되지 않은 JS",
+        flag(!unminified.is_empty(), scripts_ok > 0),
+        list(&unminified),
+        Some("들여쓰기·줄바꿈이 2KB 이상이고 10% 이상인 파일".into()),
+    );
+    o.push(
+        "performance.legacy_javascript",
+        Performance,
+        "레거시 JS (Babel 변환·폴리필 흔적)",
+        flag(!legacy.is_empty(), scripts_ok > 0),
+        list(&legacy),
+        Some("regeneratorRuntime·_classCallCheck·core-js 등 (휴리스틱)".into()),
+    );
+}
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -9296,6 +9821,7 @@ mod tests {
             change_password: None,
             gpc: None,
             conditional: None,
+            asset_encodings: Vec::new(),
             feed: Some(failed("https://a.com/feed")),
             bing_site_auth: Some(failed("https://a.com/BingSiteAuth.xml")),
             not_found_chain: Some(err()),
@@ -9347,6 +9873,7 @@ mod tests {
             change_password: None,
             gpc: None,
             conditional: None,
+            asset_encodings: Vec::new(),
             feed: Some(feed),
             bing_site_auth: Some(found("https://a.com/BingSiteAuth.xml", "<users></users>")),
             not_found_chain: Some(Ok(vec![
@@ -10223,5 +10750,104 @@ mod tests {
         );
         assert_eq!(p(&c, "meta.xml_declaration"), Presence::Missing);
         assert_eq!(p(&c, "accessibility.statement_link"), Presence::Missing);
+    }
+
+    #[test]
+    fn quality_and_asset_items() {
+        use crate::fetch::ResourceSample;
+        let mut fx = Fx::failing();
+        let p = |c: &[Check], id: &str| get(c, id).presence;
+        let html = r#"<html><head><meta http-equiv="Pragma" content="no-cache"><style>@font-face{src:url(a.ttf)} .x{content-visibility:auto}
+@keyframes k{from{left:0}} .y{color:red;-webkit-color:red} summary{display:block}</style></head><body><p>x</p></body></html>"#;
+        fx.page = page("https://a.com/", html);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        fx.page
+            .headers
+            .insert("server-timing", "db;dur=5".parse().unwrap());
+        fx.page
+            .headers
+            .insert("link", "</a.css>; rel=preload; as=style".parse().unwrap());
+        let ok = |ct: &str, body: &str, final_url: &str| {
+            Ok(ResourceSample {
+                status: 200,
+                final_url: final_url.into(),
+                content_type: Some(ct.into()),
+                bytes: body.len(),
+                body: body.as_bytes().to_vec(),
+            })
+        };
+        let pretty = format!(
+            "function a() {{\n{}}}\n",
+            "        var x = 1;\n".repeat(400)
+        );
+        fx.extended.page_weight = Some(PageWeight {
+            scripts: vec![
+                (
+                    "https://a.com/a.js".into(),
+                    ok("text/plain", &pretty, "https://a.com/a.js"),
+                ),
+                (
+                    "https://a.com/b.js".into(),
+                    ok(
+                        "text/javascript",
+                        "regeneratorRuntime.mark()",
+                        "https://cdn.a.com/b.js",
+                    ),
+                ),
+                (
+                    "https://a.com/c.js".into(),
+                    Ok(ResourceSample {
+                        status: 404,
+                        ..Default::default()
+                    }),
+                ),
+                ("https://a.com/d.js".into(), Err("boom".into())),
+            ],
+            ..Default::default()
+        });
+        fx.extended.search.asset_encodings = vec![
+            ("https://a.com/a.css".into(), Ok((200, None))),
+            ("https://a.com/b.css".into(), Ok((200, Some("br".into())))),
+            ("https://a.com/c.css".into(), Err("boom".into())),
+        ];
+        let c = fx.run();
+        for id in [
+            "meta.http_equiv_invalid",
+            "performance.legacy_font_formats",
+            "performance.content_visibility",
+            "performance.layout_animations",
+            "performance.css_prefix_order",
+            "accessibility.summary_display_changed",
+            "performance.server_timing",
+            "performance.link_header_preload",
+            "performance.asset_compression",
+            "transport.asset_content_type_mismatch",
+            "content.broken_resources",
+            "performance.asset_redirects",
+            "performance.unminified_js",
+            "performance.legacy_javascript",
+        ] {
+            assert_eq!(p(&c, id), Presence::Present, "{id}");
+        }
+        fx.extended.page_weight = None;
+        fx.extended.search.asset_encodings = Vec::new();
+        let html = "<html><body></body></html>";
+        fx.page = page("https://a.com/", html);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let c = fx.run();
+        for id in [
+            "meta.http_equiv_invalid",
+            "performance.asset_compression",
+            "transport.asset_content_type_mismatch",
+            "content.broken_resources",
+            "performance.unminified_js",
+            "performance.legacy_font_formats",
+            "performance.iframe_lazy",
+            "content.time_datetime_invalid",
+            "structured_data.microdata_invalid",
+        ] {
+            assert_eq!(p(&c, id), Presence::NotApplicable, "{id}");
+        }
+        assert_eq!(p(&c, "performance.link_header_preload"), Presence::Missing);
     }
 }

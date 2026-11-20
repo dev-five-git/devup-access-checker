@@ -805,6 +805,57 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "본문의 양방향 제어 문자",
     ),
     (
+        "content.invalid_urls",
+        Content,
+        "형식이 잘못된 URL (공백·역슬래시·잘못된 % 인코딩)",
+    ),
+    (
+        "content.invalid_enum_attrs",
+        Content,
+        "명세에 없는 열거형 속성 값",
+    ),
+    (
+        "content.time_datetime_invalid",
+        Content,
+        "형식이 잘못된 time datetime",
+    ),
+    (
+        "content.unknown_elements",
+        Content,
+        "HTML 에 없는 요소 (사용자 정의 요소 제외)",
+    ),
+    (
+        "content.text_not_nfc",
+        Content,
+        "NFC 로 정규화되지 않은 텍스트",
+    ),
+    (
+        "content.section_without_heading",
+        Content,
+        "제목 없는 section·article",
+    ),
+    (
+        "content.input_type_generic",
+        Content,
+        "이메일·전화 등에 type=text",
+    ),
+    ("content.form_method_missing", Content, "method 없는 form"),
+    (
+        "content.ad_blocker_class_names",
+        Content,
+        "광고 차단기에 가려지는 id·class",
+    ),
+    (
+        "content.attr_unsafe_chars",
+        Content,
+        "보이지 않는 제어 문자가 든 속성 값",
+    ),
+    (
+        "content.broken_resources",
+        Content,
+        "깨진 하위 리소스 (JS·CSS)",
+    ),
+    (
         "performance.render_blocking_scripts",
         Performance,
         "head 렌더링 차단 스크립트 (async/defer 없음)",
@@ -1478,6 +1529,26 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Accessibility,
         "rt 없는 ruby",
     ),
+    (
+        "accessibility.invalid_nesting",
+        Accessibility,
+        "허용되지 않는 요소 중첩",
+    ),
+    (
+        "accessibility.phrasing_content_violation",
+        Accessibility,
+        "구문 전용 요소 안의 블록 요소",
+    ),
+    (
+        "accessibility.form_conformance_errors",
+        Accessibility,
+        "폼 요소 적합성 오류",
+    ),
+    (
+        "accessibility.summary_display_changed",
+        Accessibility,
+        "summary 의 display 변경",
+    ),
     ("trust.privacy_policy", Trust, "개인정보처리방침 링크"),
     ("trust.terms", Trust, "이용약관 링크"),
     ("trust.phone", Trust, "전화번호 링크 (tel:)"),
@@ -1699,6 +1770,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "security.change_password_url",
         Security,
         "비밀번호 변경 URL (/.well-known/change-password)",
+    ),
+    (
+        "security.inline_event_handlers",
+        Security,
+        "인라인 이벤트 핸들러 (onclick 등)",
     ),
     (
         "performance.static_asset_cache",
@@ -2124,6 +2200,16 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "폐기된 Content-Language meta",
     ),
     (
+        "meta.http_equiv_invalid",
+        Meta,
+        "브라우저가 무시하는 http-equiv",
+    ),
+    (
+        "meta.base_after_resources",
+        Meta,
+        "link·script 뒤에 온 base (또는 base 여러 개)",
+    ),
+    (
         "structured_data.hreflang_reciprocal",
         StructuredData,
         "hreflang 상호 참조",
@@ -2239,6 +2325,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         StructuredData,
         "schema.org 접근성 메타데이터",
     ),
+    (
+        "structured_data.microdata_invalid",
+        StructuredData,
+        "잘못된 microdata (itemprop·itemref·itemtype)",
+    ),
     ("performance.external_css", Performance, "외부 CSS 분석"),
     (
         "performance.font_face_without_display",
@@ -2306,6 +2397,126 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "performance.vary_accept_encoding_missing",
         Performance,
         "압축 응답에 Vary: Accept-Encoding 없음",
+    ),
+    (
+        "performance.empty_src",
+        Performance,
+        "빈 src·href (페이지 자신을 다시 요청)",
+    ),
+    (
+        "performance.srcset_sizes_invalid",
+        Performance,
+        "srcset w 서술자에 sizes 누락 등",
+    ),
+    (
+        "performance.preload_invalid",
+        Performance,
+        "잘못된 preload (as 누락·글꼴 crossorigin 누락)",
+    ),
+    (
+        "performance.script_attr_ineffective",
+        Performance,
+        "효과 없는·잘못된 script 속성",
+    ),
+    (
+        "performance.script_json_invalid",
+        Performance,
+        "importmap·speculationrules JSON 오류",
+    ),
+    (
+        "performance.speculation_rules",
+        Performance,
+        "Speculation Rules (prefetch·prerender)",
+    ),
+    (
+        "performance.excess_preconnect",
+        Performance,
+        "preconnect 4개 초과",
+    ),
+    (
+        "performance.preconnect_unused",
+        Performance,
+        "참조되지 않는 preconnect 출처",
+    ),
+    (
+        "performance.preconnect_crossorigin_missing",
+        Performance,
+        "글꼴 출처 preconnect 의 crossorigin 누락",
+    ),
+    (
+        "performance.iframe_lazy",
+        Performance,
+        "loading=lazy 없는 iframe (첫 번째 제외)",
+    ),
+    (
+        "performance.third_party_embeds",
+        Performance,
+        "무거운 서드파티 임베드 (파사드 후보)",
+    ),
+    (
+        "performance.video_preload",
+        Performance,
+        "preload 를 줄이지 않은 video",
+    ),
+    (
+        "performance.img_decoding",
+        Performance,
+        "decoding=async 이미지",
+    ),
+    (
+        "performance.inline_style_attrs",
+        Performance,
+        "style 속성 사용 요소",
+    ),
+    (
+        "performance.legacy_font_formats",
+        Performance,
+        "WOFF2 없는 글꼴 (ttf·otf·eot)",
+    ),
+    (
+        "performance.content_visibility",
+        Performance,
+        "content-visibility 사용",
+    ),
+    (
+        "performance.layout_animations",
+        Performance,
+        "레이아웃 속성을 움직이는 @keyframes",
+    ),
+    (
+        "performance.css_prefix_order",
+        Performance,
+        "표준 속성 뒤의 접두사 속성",
+    ),
+    (
+        "performance.server_timing",
+        Performance,
+        "Server-Timing 헤더",
+    ),
+    (
+        "performance.link_header_preload",
+        Performance,
+        "Link 헤더 preload·preconnect",
+    ),
+    (
+        "performance.asset_compression",
+        Performance,
+        "압축 없이 전달되는 CSS·JS",
+    ),
+    (
+        "performance.asset_redirects",
+        Performance,
+        "리다이렉트되는 JS",
+    ),
+    (
+        "performance.unminified_js",
+        Performance,
+        "압축(minify)되지 않은 JS",
+    ),
+    (
+        "performance.legacy_javascript",
+        Performance,
+        "레거시 JS (Babel 변환·폴리필 흔적)",
     ),
     ("site.pages_sampled", Site, "표본 페이지 수집"),
     ("site.failed_pages", Site, "표본 중 2xx 아닌 페이지"),
@@ -2426,6 +2637,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "transport.ua_redirect_mismatch",
         Transport,
         "UA 별 다른 최종 호스트 (교묘한 리다이렉트 의심)",
+    ),
+    (
+        "transport.asset_content_type_mismatch",
+        Transport,
+        "JavaScript 가 아닌 Content-Type 의 JS",
     ),
 ];
 

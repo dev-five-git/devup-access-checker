@@ -25,6 +25,7 @@ mod llms;
 mod model;
 mod more;
 mod naver_ld;
+mod quality;
 mod robots;
 mod rules;
 mod schema_types;
@@ -653,21 +654,31 @@ impl Checker {
                 return None;
             }
             let x = &facts.extra;
-            let js: Vec<(String, usize)> = stream::iter(sample(&x.script_urls, MAX_JS_FILES))
-                .map(|u| {
-                    let probe = &probe;
-                    async move {
-                        let url = Url::parse(u).ok()?;
-                        let n = fetch::count_bytes(probe, &url, 20 * 1024 * 1024)
-                            .await
-                            .ok()?;
-                        Some((u.clone(), n))
-                    }
+            let scripts: Vec<(String, Result<fetch::ResourceSample, String>)> = stream::iter(
+                sample(&x.script_urls, MAX_JS_FILES)
+                    .into_iter()
+                    .filter_map(|u| Url::parse(u).ok().map(|url| (u, url))),
+            )
+            .map(|(u, url)| {
+                let probe = &probe;
+                async move {
+                    let r =
+                        fetch::sample_resource(probe, &url, 20 * 1024 * 1024, 1024 * 1024).await;
+                    (u.clone(), r)
+                }
+            })
+            .buffer_unordered(8)
+            .collect()
+            .await;
+            let js: Vec<(String, usize)> = scripts
+                .iter()
+                .filter_map(|(u, r)| {
+                    r.as_ref()
+                        .ok()
+                        .filter(|s| (200..300).contains(&s.status))
+                        .map(|s| (u.clone(), s.bytes))
                 })
-                .buffer_unordered(8)
-                .filter_map(|x| async move { x })
-                .collect()
-                .await;
+                .collect();
             let imgs: Vec<(String, Option<u64>)> = stream::iter(sample(&x.image_urls, MAX_IMAGES))
                 .map(|u| {
                     let probe = &probe;
@@ -702,6 +713,7 @@ impl Checker {
                     checks::LARGE_SCRIPT_BYTES,
                 ),
                 large_images: checks::largest(sized.iter().cloned(), checks::LARGE_IMAGE_BYTES),
+                scripts,
                 large_gifs: checks::largest(
                     sized.iter().filter(|(u, _)| is_gif(u)).cloned(),
                     checks::LARGE_GIF_BYTES,
@@ -774,16 +786,34 @@ impl Checker {
                 }
                 Some(fetch::conditional_status(&probe, &base, etag, lm).await)
             };
+            let asset_encodings = async {
+                if !opts.check_resources {
+                    return Vec::new();
+                }
+                let urls: Vec<(&String, Url)> = facts
+                    .extra
+                    .stylesheet_urls
+                    .iter()
+                    .chain(&facts.extra.script_urls)
+                    .filter_map(|u| Url::parse(u).ok().map(|url| (u, url)))
+                    .take(5)
+                    .collect();
+                join_all(urls.into_iter().map(|(u, url)| async move {
+                    let r = fetch::raw_encoding(&opts.user_agent, opts.probe_timeout, &url).await;
+                    (u.clone(), r)
+                }))
+                .await
+            };
             let gpc_url = at("/.well-known/gpc.json");
             let gpc = fetch::probe_file(&probe, &gpc_url, Json);
             let (
                 (feed, bing, not_found_chain, indexnow),
                 (llms_subpath, agent_card, robots_chain),
-                (change_password, gpc, conditional),
+                (change_password, gpc, conditional, asset_encodings),
             ) = tokio::join!(
                 async { tokio::join!(feed, bing, not_found_chain, indexnow) },
                 async { tokio::join!(llms_subpath, agent_card, robots_chain) },
-                async { tokio::join!(change_password, gpc, conditional) },
+                async { tokio::join!(change_password, gpc, conditional, asset_encodings) },
             );
             checks::SearchProbes {
                 llms_subpath,
@@ -791,6 +821,7 @@ impl Checker {
                 change_password,
                 gpc: Some(gpc),
                 conditional,
+                asset_encodings,
                 robots_chain,
                 feed,
                 bing_site_auth: Some(bing),

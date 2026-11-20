@@ -345,6 +345,17 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `content.underscore_url_paths` | 밑줄로 단어를 구분한 URL |
 | `content.linked_documents` | 비HTML 문서 링크 (PDF·HWP·Office) |
 | `content.bidi_control_chars` | 본문의 양방향 제어 문자 |
+| `content.invalid_urls` | 형식이 잘못된 URL (공백·역슬래시·잘못된 % 인코딩) |
+| `content.invalid_enum_attrs` | 명세에 없는 열거형 속성 값 |
+| `content.time_datetime_invalid` | 형식이 잘못된 time datetime |
+| `content.unknown_elements` | HTML 에 없는 요소 (사용자 정의 요소 제외) |
+| `content.text_not_nfc` | NFC 로 정규화되지 않은 텍스트 |
+| `content.section_without_heading` | 제목 없는 section·article |
+| `content.input_type_generic` | 이메일·전화 등에 type=text |
+| `content.form_method_missing` | method 없는 form |
+| `content.ad_blocker_class_names` | 광고 차단기에 가려지는 id·class |
+| `content.attr_unsafe_chars` | 보이지 않는 제어 문자가 든 속성 값 |
+| `content.broken_resources` | 깨진 하위 리소스 (JS·CSS) |
 | `performance.render_blocking_scripts` | head 렌더링 차단 스크립트 (async/defer 없음) |
 | `performance.head_stylesheets` | head 외부 스타일시트 |
 | `performance.preconnect` | preconnect / dns-prefetch |
@@ -491,6 +502,10 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `accessibility.bdo_without_dir` | dir 없는(또는 auto) bdo |
 | `accessibility.translate_invalid` | 잘못된 translate 값 |
 | `accessibility.ruby_without_rt` | rt 없는 ruby |
+| `accessibility.invalid_nesting` | 허용되지 않는 요소 중첩 |
+| `accessibility.phrasing_content_violation` | 구문 전용 요소 안의 블록 요소 |
+| `accessibility.form_conformance_errors` | 폼 요소 적합성 오류 |
+| `accessibility.summary_display_changed` | summary 의 display 변경 |
 | `trust.privacy_policy` | 개인정보처리방침 링크 |
 | `trust.terms` | 이용약관 링크 |
 | `trust.phone` | 전화번호 링크 (tel:) |
@@ -553,6 +568,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `security.sri_invalid` | integrity 속성 오류 |
 | `security.protocol_relative_urls` | 프로토콜 상대 URL (//) |
 | `security.change_password_url` | 비밀번호 변경 URL (/.well-known/change-password) |
+| `security.inline_event_handlers` | 인라인 이벤트 핸들러 (onclick 등) |
 | `performance.static_asset_cache` | 정적 리소스 Cache-Control |
 | `performance.dom_size` | DOM 크기 |
 | `performance.third_party_scripts` | 서드파티 스크립트 호스트 |
@@ -672,6 +688,8 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `meta.bom_in_content` | 본문 중간의 BOM (U+FEFF) |
 | `meta.xml_declaration` | text/html 문서의 XML 선언 |
 | `meta.content_language_meta` | 폐기된 Content-Language meta |
+| `meta.http_equiv_invalid` | 브라우저가 무시하는 http-equiv |
+| `meta.base_after_resources` | link·script 뒤에 온 base (또는 base 여러 개) |
 | `structured_data.hreflang_reciprocal` | hreflang 상호 참조 |
 | `structured_data.unknown_types` | schema.org 에 없는 @type |
 | `structured_data.rdfa` | RDFa |
@@ -696,6 +714,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `structured_data.site_name_mismatch` | WebSite.name 과 og:site_name 불일치 |
 | `structured_data.is_accessible_for_free` | isAccessibleForFree (유료 콘텐츠 표시) |
 | `structured_data.accessibility_metadata` | schema.org 접근성 메타데이터 |
+| `structured_data.microdata_invalid` | 잘못된 microdata (itemprop·itemref·itemtype) |
 | `performance.external_css` | 외부 CSS 분석 |
 | `performance.font_face_without_display` | font-display 없는 @font-face |
 | `performance.page_weight` | 페이지 리소스 무게 |
@@ -712,6 +731,30 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `performance.large_gifs` | 큰 GIF 이미지 (100KB 초과) |
 | `performance.cache_control_conflict` | Cache-Control 지시어 충돌·오류 |
 | `performance.vary_accept_encoding_missing` | 압축 응답에 Vary: Accept-Encoding 없음 |
+| `performance.empty_src` | 빈 src·href (페이지 자신을 다시 요청) |
+| `performance.srcset_sizes_invalid` | srcset w 서술자에 sizes 누락 등 |
+| `performance.preload_invalid` | 잘못된 preload (as 누락·글꼴 crossorigin 누락) |
+| `performance.script_attr_ineffective` | 효과 없는·잘못된 script 속성 |
+| `performance.script_json_invalid` | importmap·speculationrules JSON 오류 |
+| `performance.speculation_rules` | Speculation Rules (prefetch·prerender) |
+| `performance.excess_preconnect` | preconnect 4개 초과 |
+| `performance.preconnect_unused` | 참조되지 않는 preconnect 출처 |
+| `performance.preconnect_crossorigin_missing` | 글꼴 출처 preconnect 의 crossorigin 누락 |
+| `performance.iframe_lazy` | loading=lazy 없는 iframe (첫 번째 제외) |
+| `performance.third_party_embeds` | 무거운 서드파티 임베드 (파사드 후보) |
+| `performance.video_preload` | preload 를 줄이지 않은 video |
+| `performance.img_decoding` | decoding=async 이미지 |
+| `performance.inline_style_attrs` | style 속성 사용 요소 |
+| `performance.legacy_font_formats` | WOFF2 없는 글꼴 (ttf·otf·eot) |
+| `performance.content_visibility` | content-visibility 사용 |
+| `performance.layout_animations` | 레이아웃 속성을 움직이는 @keyframes |
+| `performance.css_prefix_order` | 표준 속성 뒤의 접두사 속성 |
+| `performance.server_timing` | Server-Timing 헤더 |
+| `performance.link_header_preload` | Link 헤더 preload·preconnect |
+| `performance.asset_compression` | 압축 없이 전달되는 CSS·JS |
+| `performance.asset_redirects` | 리다이렉트되는 JS |
+| `performance.unminified_js` | 압축(minify)되지 않은 JS |
+| `performance.legacy_javascript` | 레거시 JS (Babel 변환·폴리필 흔적) |
 | `site.pages_sampled` | 표본 페이지 수집 |
 | `site.failed_pages` | 표본 중 2xx 아닌 페이지 |
 | `site.duplicate_titles` | 페이지 간 중복 title |
@@ -744,3 +787,4 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `transport.security_txt_signed` | security.txt 전자서명 |
 | `transport.security_txt_canonical_mismatch` | security.txt Canonical 에 실제 URL 없음 |
 | `transport.ua_redirect_mismatch` | UA 별 다른 최종 호스트 (교묘한 리다이렉트 의심) |
+| `transport.asset_content_type_mismatch` | JavaScript 가 아닌 Content-Type 의 JS |

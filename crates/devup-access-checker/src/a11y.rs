@@ -91,7 +91,11 @@ pub struct A11yFacts {
 static HEADINGS: LazyLock<Selector> = LazyLock::new(|| sel("h1, h2, h3, h4, h5, h6"));
 static IMG_ALT: LazyLock<Selector> = LazyLock::new(|| sel("img[alt]"));
 static ID_REFS: LazyLock<Selector> = LazyLock::new(|| {
-    sel("label[for], [aria-labelledby], [aria-describedby], [aria-controls], [headers]")
+    sel(
+        "label[for], [aria-labelledby], [aria-describedby], [aria-controls], [headers], [aria-owns], \
+         [aria-activedescendant], [aria-details], [aria-errormessage], [aria-flowto], input[list], [form], \
+         [popovertarget], [commandfor], [itemref]",
+    )
 });
 static ARIA_HIDDEN: LazyLock<Selector> = LazyLock::new(|| sel("[aria-hidden=true]"));
 static FOCUSABLE: LazyLock<Selector> = LazyLock::new(|| {
@@ -337,6 +341,16 @@ pub fn extract(doc: &Html) -> A11yFacts {
             "aria-describedby",
             "aria-controls",
             "headers",
+            "aria-owns",
+            "aria-activedescendant",
+            "aria-details",
+            "aria-errormessage",
+            "aria-flowto",
+            "list",
+            "form",
+            "popovertarget",
+            "commandfor",
+            "itemref",
         ] {
             if attr_name == "for" && el.value().name() != "label" {
                 continue;
