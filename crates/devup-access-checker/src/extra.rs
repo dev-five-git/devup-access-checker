@@ -63,6 +63,8 @@ pub const SCHEMA_REQUIRED: &[(&str, &[&str], &[&str])] = &[
     ("breadcrumb_list", &["BreadcrumbList"], &["itemListElement"]),
     ("faq_page", &["FAQPage"], &["mainEntity"]),
     ("local_business", &["LocalBusiness"], &["name", "address"]),
+    // Bing 구조화 데이터 문서: 이름 없는 Person 은 무시된다
+    ("person", &["Person"], &["name"]),
     // Google 검색 센터 리치 결과 문서의 "Required properties" (최상위 속성만)
     ("book", &["Book"], &["name", "author", "url", "workExample"]),
     ("course", &["Course"], &["name", "description"]),
@@ -197,6 +199,8 @@ pub struct ExtraFacts {
     /// 같은 호스트에서 로드하는 script/stylesheet 경로
     pub same_origin_resources: Vec<String>,
     pub ld_objects: Vec<LdObject>,
+    /// 해석된 JSON-LD 블록 원본 (네이버 유형별 확인용)
+    pub ld_roots: Vec<Value>,
     pub published: Option<String>,
     pub modified: Option<String>,
     pub author: Option<String>,
@@ -545,6 +549,7 @@ pub fn extract(doc: &Html, base: &Url) -> ExtraFacts {
     f.modified = meta("article:modified_time")
         .or_else(|| meta("og:updated_time"))
         .or_else(|| ld("dateModified"));
+    f.ld_roots = ld_values.clone();
     // ===== AMP / 앱 링크 메타 =====
     for l in doc.select(&LINK) {
         if rels(&l).iter().any(|r| r == "amphtml") && f.amphtml.is_none() {

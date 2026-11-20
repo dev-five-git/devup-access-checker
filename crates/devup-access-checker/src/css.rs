@@ -14,6 +14,12 @@ static WHITESPACE: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"\s+").unwrap(
 static ORIENTATION_LOCK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?is)@media[^{]*orientation\s*:\s*(?:portrait|landscape)[^{]*\{[^@]*?rotate\(\s*-?(?:90|270)deg").unwrap()
 });
+static MOTION: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)(?:^|[;{\s])(?:animation|transition)(?:-name|-duration)?\s*:\s*([^;}]*)")
+        .unwrap()
+});
+static JUSTIFY: LazyLock<Regex> =
+    LazyLock::new(|| Regex::new(r"(?i)text-align\s*:\s*justify").unwrap());
 static COMMENT: LazyLock<Regex> = LazyLock::new(|| Regex::new(r"(?s)/\*.*?\*/").unwrap());
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
@@ -32,6 +38,12 @@ pub struct CssFacts {
     pub bytes: usize,
     /// 주석·불필요한 공백을 지우면 줄어드는 바이트 (압축 안 된 CSS 추정)
     pub minifiable_bytes: usize,
+    /// 움직임을 만드는 animation·transition 선언 수 (none·0s 제외)
+    pub animations: usize,
+    /// `prefers-reduced-motion` 미디어 쿼리 사용
+    pub reduced_motion: bool,
+    /// `text-align: justify` 선언 수
+    pub justify: usize,
 }
 
 impl CssFacts {
@@ -44,6 +56,9 @@ impl CssFacts {
         self.orientation_lock += other.orientation_lock;
         self.bytes += other.bytes;
         self.minifiable_bytes += other.minifiable_bytes;
+        self.animations += other.animations;
+        self.reduced_motion |= other.reduced_motion;
+        self.justify += other.justify;
     }
 }
 
@@ -58,6 +73,12 @@ pub fn analyze(css: &str) -> CssFacts {
         orientation_lock: ORIENTATION_LOCK.find_iter(&css).count(),
         bytes: original,
         minifiable_bytes: original - collapsed,
+        animations: MOTION
+            .captures_iter(&css)
+            .filter(|c| !matches!(c[1].trim(), "none" | "0s" | "0" | "all 0s"))
+            .count(),
+        reduced_motion: css.to_ascii_lowercase().contains("prefers-reduced-motion"),
+        justify: JUSTIFY.find_iter(&css).count(),
         ..Default::default()
     };
     for c in FONT_FACE.captures_iter(&css) {
@@ -90,6 +111,9 @@ mod tests {
                 orientation_lock: 0,
                 bytes: f.bytes,
                 minifiable_bytes: f.minifiable_bytes,
+                animations: 0,
+                reduced_motion: false,
+                justify: 0,
             }
         );
     }
@@ -106,5 +130,16 @@ mod tests {
         assert_eq!(f.orientation_lock, 1);
         assert!(f.minifiable_bytes > 10 && f.bytes > f.minifiable_bytes);
         assert_eq!(analyze("a{b:c}").minifiable_bytes, 0);
+    }
+
+    #[test]
+    fn motion_and_justify() {
+        let f = analyze(
+            "a{transition: color .2s} b{animation-name: spin} c{transition:none} d{animation-duration: 0s}             @media (prefers-reduced-motion: reduce){a{transition:none}} p{text-align: justify}",
+        );
+        assert_eq!((f.animations, f.reduced_motion, f.justify), (2, true, 1));
+        let mut g = analyze("x{TEXT-ALIGN:JUSTIFY}");
+        g.merge(&f);
+        assert_eq!((g.animations, g.reduced_motion, g.justify), (2, true, 2));
     }
 }

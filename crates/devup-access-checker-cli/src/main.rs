@@ -27,7 +27,7 @@ struct Cli {
     /// 링크 접근성 검증 생략
     #[arg(long)]
     no_links: bool,
-    /// AI 크롤러 User-Agent 요청 생략
+    /// AI·검색 크롤러 User-Agent 요청 생략
     #[arg(long)]
     no_ai_ua: bool,
     /// HTTP→HTTPS 리다이렉트·압축 확인 생략
@@ -39,6 +39,9 @@ struct Cli {
     /// 여러 페이지 표본 수 (0 = 생략)
     #[arg(long, default_value_t = 10)]
     pages: usize,
+    /// IndexNow 키 (지정하면 키 파일을 확인)
+    #[arg(long)]
+    indexnow_key: Option<String>,
     /// 대상 페이지 timeout (초)
     #[arg(long, default_value_t = 30)]
     timeout: u64,
@@ -109,6 +112,7 @@ async fn run(cli: Cli, out: &mut impl Write, err: &mut impl Write) -> std::io::R
     opts.check_transport = !cli.no_transport;
     opts.page_samples = cli.pages;
     opts.check_resources = !cli.no_resources;
+    opts.indexnow_key = cli.indexnow_key.clone();
     let checker = Checker::new(opts);
 
     // 여러 URL 은 동시에 점검하고, 출력은 입력 순서를 따른다

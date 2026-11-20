@@ -1273,3 +1273,102 @@ fn coverage_doc_ids_exist() {
     }
     assert!(missing.is_empty(), "카탈로그에 없는 id: {missing:?}");
 }
+
+#[tokio::test]
+async fn search_engine_network_items() {
+    let s = MockServer::start().await;
+    let port = s.address().port();
+    let page = r#"<!doctype html><html><head><title>t</title>
+<link rel="alternate" type="application/rss+xml" href="/feed.xml"></head><body><p>x</p></body></html>"#;
+    let ok = |ct: &str, body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", ct)
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ok("text/html", page))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(301)
+                .insert_header("location", format!("http://127.0.0.1:{port}/")),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ok("text/plain", "User-agent: *\nDisallow: /start\n"))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/feed.xml"))
+        .respond_with(ok(
+            "application/rss+xml",
+            "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><link>https://other.example/</link>\
+             <item><link>/rel</link><content:encoded>본문</content:encoded></item></channel></rss>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/BingSiteAuth.xml"))
+        .respond_with(ok(
+            "application/xml",
+            "<?xml version=\"1.0\"?><users><user>ABC</user></users>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/0123456789abcdef.txt"))
+        .respond_with(ok("text/plain", "0123456789abcdef\n"))
+        .mount(&s)
+        .await;
+
+    let r = Checker::new(opts(|o| {
+        o.indexnow_key = Some("0123456789abcdef".into());
+        o.page_samples = 0;
+        o.check_resources = false;
+    }))
+    .check(&format!("http://localhost:{port}/start"))
+    .await
+    .unwrap();
+    for id in [
+        "crawling.feed_valid",
+        "crawling.feed_items",
+        "crawling.feed_foreign_host",
+        "crawling.feed_full_content",
+        "meta.bing_site_auth_file",
+        "crawling.robots_encoding",
+        "crawling.indexnow_key_file",
+        "crawling.ua_access.yeti",
+        "crawling.ua_access.bingbot",
+        "transport.redirect_chain_robots_blocked",
+    ] {
+        assert_eq!(presence(&r, id), Presence::Present, "{id}");
+    }
+    assert_eq!(presence(&r, "crawling.feed_oversize"), Presence::Missing);
+    assert_eq!(presence(&r, "not_found_page.redirects"), Presence::Missing);
+
+    // 형식이 틀린 키는 요청하지 않는다
+    let r = Checker::new(opts(|o| {
+        o.indexnow_key = Some("not a key".into());
+        o.check_transport = false;
+        o.check_links = false;
+        o.page_samples = 0;
+        o.check_resources = false;
+    }))
+    .check(&s.uri())
+    .await
+    .unwrap();
+    assert_eq!(
+        presence(&r, "crawling.indexnow_key_file"),
+        Presence::Missing
+    );
+    assert_eq!(presence(&r, "crawling.feed_valid"), Presence::NotApplicable);
+    assert_eq!(
+        presence(&r, "not_found_page.redirects"),
+        Presence::NotApplicable
+    );
+}

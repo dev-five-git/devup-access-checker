@@ -4,14 +4,22 @@
 
 표의 항목 id 는 모두 [`CATALOG`](../crates/devup-access-checker/src/catalog.rs)에 있으며, 테스트(`coverage_doc_ids_exist`)가 이를 확인합니다.
 
-axe-core 규칙과 Lighthouse 감사 목록은 `python scripts/check_coverage.py` 로 공식 저장소의 최신 목록과 다시 대조할 수 있습니다. 새 규칙이 생기면 대조표에 없는 이름을 출력합니다.
+`python scripts/check_coverage.py` 는 아래 기준의 최신 원문을 받아 대조표·내장 목록과 다시 대조하고, 빠진 이름이 있으면 출력합니다. axe-core 규칙, Lighthouse 감사, Google 구조화 데이터 문서, OWASP 권장 헤더, WCAG 2.2 성공 기준, Open Graph 속성, Web App Manifest 멤버, WHATWG HTML 폐기 속성, schema.org 타입, MDN 폐기·비표준 헤더가 대상입니다. KWCAG 2.2, Google 검색 센터 기본 요건, X Cards, 네이버 서치어드바이저, Bing 웹마스터 가이드라인은 원문이 기계로 읽을 수 있는 목록이 아니라서 사람이 대조했습니다.
 
 - [KWCAG 2.2 (33개 검사항목)](#kwcag-22)
+- [WCAG 2.2 (성공 기준 87개)](#wcag-22)
 - [axe-core 규칙](#axe-core-규칙)
 - [Lighthouse](#lighthouse)
 - [Google 검색 센터](#google-검색-센터)
 - [Google 리치 결과 (구조화 데이터)](#google-리치-결과)
 - [보안 헤더 (OWASP Secure Headers)](#보안-헤더)
+- [Open Graph·X Cards](#open-graphx-cards)
+- [Web App Manifest](#web-app-manifest)
+- [HTML 폐기 속성](#html-폐기-속성)
+- [schema.org](#schemaorg)
+- [MDN 폐기 헤더](#mdn-폐기-헤더)
+- [네이버 서치어드바이저](#네이버-서치어드바이저)
+- [Bing 웹마스터 가이드라인](#bing-웹마스터-가이드라인)
 - [생성형 검색(GEO)](#생성형-검색geo)
 - [확인할 수 없는 것 요약](#확인할-수-없는-것-요약)
 
@@ -55,6 +63,100 @@ axe-core 규칙과 Lighthouse 감사 목록은 `python scripts/check_coverage.py
 | 4.1.1 마크업 오류 방지 | `accessibility.markup_errors` `accessibility.duplicate_ids` | — |
 | 4.1.2 웹 애플리케이션 접근성 준수 | `accessibility.invalid_aria_role` `accessibility.invalid_aria_attr` `accessibility.aria_invalid_value` `accessibility.aria_required_attr_missing` `accessibility.aria_required_children` `accessibility.aria_required_parent` `accessibility.aria_name_prohibited` `accessibility.aria_deprecated_role` `accessibility.custom_control_unnamed` `accessibility.dialog_unnamed` `accessibility.status_widget_unnamed` | 상태 변화가 보조기기에 전달되는지 (실행) |
 | (정보통신접근성 품질인증) | `accessibility.cert_mark` | 인증 유효 여부 (발급기관 조회 필요) |
+
+## WCAG 2.2
+
+W3C 웹 콘텐츠 접근성 지침 2.2 의 성공 기준 87개 전체입니다 (A·AA·AAA, 폐지된 4.1.1 포함). 기준 목록은 `scripts/check_coverage.py` 가 W3C 의 `wcag.json` 과 다시 대조합니다.
+
+| 성공 기준 | 등급 | 항목 id | 확인할 수 없는 부분 |
+|---|---|---|---|
+| 1.1.1 Non-text Content | A | `content.img_alt_missing` `accessibility.filename_alt` `accessibility.long_alt` `accessibility.redundant_alt` `accessibility.area_alt_missing` `accessibility.object_alt_missing` `accessibility.role_img_unnamed` `accessibility.unnamed_buttons` | 대체 텍스트가 이미지 내용과 맞는지 (의미 판단) |
+| 1.2.1 Audio-only and Video-only (Prerecorded) | A | — | 확인 불가: 오디오·영상의 대체 대본이 있는지는 의미 판단 |
+| 1.2.2 Captions (Prerecorded) | A | `accessibility.video_captions_missing` | 영상에 입힌 자막 |
+| 1.2.3 Audio Description or Media Alternative (Prerecorded) | A | `accessibility.video_audio_description_missing` | 대체 대본으로 대신한 경우 (의미 판단) |
+| 1.2.4 Captions (Live) | AA | — | 확인 불가: 실시간 방송 자막 (재생 필요) |
+| 1.2.5 Audio Description (Prerecorded) | AA | `accessibility.video_audio_description_missing` | 영상 음성에 직접 넣은 해설 |
+| 1.2.6 Sign Language (Prerecorded) | AAA | — | 확인 불가: 수어 영상 (영상 분석) |
+| 1.2.7 Extended Audio Description (Prerecorded) | AAA | — | 확인 불가: 확장 음성 해설 (영상 분석) |
+| 1.2.8 Media Alternative (Prerecorded) | AAA | — | 확인 불가: 대체 대본의 충실도 (의미 판단) |
+| 1.2.9 Audio-only (Live) | AAA | — | 확인 불가: 실시간 오디오 대체 (재생 필요) |
+| 1.3.1 Info and Relationships | A | `accessibility.table_headers_missing` `accessibility.empty_table_headers` `accessibility.scope_invalid` `accessibility.table_caption_missing` `accessibility.list_structure_invalid` `accessibility.definition_list_invalid` `accessibility.fieldset_legend_missing` `accessibility.radio_group_ungrouped` `accessibility.broken_id_refs` `accessibility.aria_required_children` `accessibility.aria_required_parent` | 시각적 표현과 구조가 맞는지 (렌더링) |
+| 1.3.2 Meaningful Sequence | A | `content.heading_skip` `accessibility.list_structure_invalid` `accessibility.positive_tabindex` | CSS 배치로 바뀐 읽기 순서 (렌더링) |
+| 1.3.3 Sensory Characteristics | A | — | 확인 불가: 모양·위치만으로 지시하는지는 의미 판단 |
+| 1.3.4 Orientation | AA | `accessibility.orientation_lock` | 스크립트로 고정한 방향 |
+| 1.3.5 Identify Input Purpose | AA | `accessibility.autocomplete_missing` `accessibility.autocomplete_invalid` | — |
+| 1.3.6 Identify Purpose | AAA | `accessibility.landmark_main` `accessibility.landmark_nav` `accessibility.landmark_header` `accessibility.landmark_footer` `accessibility.invalid_aria_role` | 아이콘·컴포넌트 목적 표시 (의미 판단) |
+| 1.4.1 Use of Color | A | — | 확인 불가: 계산된 색 필요 (렌더링) |
+| 1.4.2 Audio Control | A | `accessibility.autoplay_media` | 스크립트로 재생하는 소리 |
+| 1.4.3 Contrast (Minimum) | AA | — | 확인 불가: 계산된 글자·배경 색 필요 (렌더링) |
+| 1.4.4 Resize Text | AA | `accessibility.zoom_disabled` | 200% 확대 시 잘림 (렌더링) |
+| 1.4.5 Images of Text | AA | — | 확인 불가: 이미지 속 글자 판별 (이미지 분석) |
+| 1.4.6 Contrast (Enhanced) | AAA | — | 확인 불가: 계산된 색 필요 (렌더링) |
+| 1.4.7 Low or No Background Audio | AAA | — | 확인 불가: 배경음 크기 (오디오 분석) |
+| 1.4.8 Visual Presentation | AAA | `accessibility.justified_text` | 색 선택·줄 간격·폭 80자 (렌더링) |
+| 1.4.9 Images of Text (No Exception) | AAA | — | 확인 불가: 이미지 속 글자 판별 (이미지 분석) |
+| 1.4.10 Reflow | AA | `accessibility.viewport_fixed_width` `meta.viewport` | 320px 폭에서 가로 스크롤 (렌더링) |
+| 1.4.11 Non-text Contrast | AA | — | 확인 불가: 계산된 색 필요 (렌더링) |
+| 1.4.12 Text Spacing | AA | `accessibility.inline_spacing_important` | 외부 CSS 의 고정 높이로 잘림 (렌더링) |
+| 1.4.13 Content on Hover or Focus | AA | — | 확인 불가: 호버·초점 시 나타나는 콘텐츠 (실행) |
+| 2.1.1 Keyboard | A | `accessibility.custom_control_unfocusable` `accessibility.click_without_keyboard` `accessibility.focusable_aria_hidden` `accessibility.nested_interactive` `accessibility.presentation_focusable` | 스크립트로 붙인 이벤트 (실행) |
+| 2.1.2 No Keyboard Trap | A | — | 확인 불가: 키보드 트랩 (실행) |
+| 2.1.3 Keyboard (No Exception) | AAA | `accessibility.custom_control_unfocusable` `accessibility.click_without_keyboard` | 스크립트로 붙인 이벤트 (실행) |
+| 2.1.4 Character Key Shortcuts | A | `accessibility.duplicate_accesskeys` | 스크립트로 구현한 단축키 |
+| 2.2.1 Timing Adjustable | A | `accessibility.timed_refresh` | 스크립트 타이머·세션 만료 |
+| 2.2.2 Pause, Stop, Hide | A | `accessibility.autoplay_media` `accessibility.obsolete_elements` `accessibility.reduced_motion` | 스크립트 자동 슬라이드 |
+| 2.2.3 No Timing | AAA | `accessibility.timed_refresh` | 스크립트 타이머 |
+| 2.2.4 Interruptions | AAA | — | 확인 불가: 스크립트 알림·팝업 (실행) |
+| 2.2.5 Re-authenticating | AAA | — | 확인 불가: 재인증 후 데이터 유지 (로그인 필요) |
+| 2.2.6 Timeouts | AAA | — | 확인 불가: 비활동 시간 안내 (의미 판단) |
+| 2.3.1 Three Flashes or Below Threshold | A | — | 확인 불가: 프레임 분석 필요 |
+| 2.3.2 Three Flashes | AAA | — | 확인 불가: 프레임 분석 필요 |
+| 2.3.3 Animation from Interactions | AAA | `accessibility.reduced_motion` | 스크립트 애니메이션 |
+| 2.4.1 Bypass Blocks | A | `accessibility.skip_link` `accessibility.landmark_main` `accessibility.landmark_nav` `accessibility.landmark_header` `accessibility.landmark_footer` | 건너뛰기 링크 동작 (실행) |
+| 2.4.2 Page Titled | A | `meta.title` `accessibility.page_title_generic` `accessibility.iframe_title_missing` `accessibility.iframe_title_duplicate` | 제목이 내용을 잘 설명하는지 (의미 판단) |
+| 2.4.3 Focus Order | A | `accessibility.positive_tabindex` `accessibility.dialog_unnamed` | 실제 초점 순서 (렌더링) |
+| 2.4.4 Link Purpose (In Context) | A | `accessibility.empty_links` `accessibility.vague_link_text` `accessibility.identical_link_text` | 문맥상 목적이 분명한지 (의미 판단) |
+| 2.4.5 Multiple Ways | AA | `accessibility.site_search` `accessibility.landmark_nav` `accessibility.breadcrumb_nav` | 사이트맵 페이지 등 다른 경로 (의미 판단) |
+| 2.4.6 Headings and Labels | AA | `accessibility.empty_headings` `accessibility.unlabeled_form_controls` | 제목·레이블이 설명적인지 (의미 판단) |
+| 2.4.7 Focus Visible | AA | `accessibility.outline_removed` | 실제 초점 표시 모양 (렌더링) |
+| 2.4.8 Location | AAA | `accessibility.breadcrumb_nav` `structured_data.type.breadcrumb_list` | — |
+| 2.4.9 Link Purpose (Link Only) | AAA | `accessibility.vague_link_text` `accessibility.identical_link_text` `accessibility.empty_links` | 링크 텍스트만으로 목적이 분명한지 (의미 판단) |
+| 2.4.10 Section Headings | AAA | `content.h2` `content.heading_skip` | 구역마다 제목이 있는지 (의미 판단) |
+| 2.4.11 Focus Not Obscured (Minimum) | AA | — | 확인 불가: 고정 헤더에 가려지는지 (렌더링) |
+| 2.4.12 Focus Not Obscured (Enhanced) | AAA | — | 확인 불가: 고정 헤더에 가려지는지 (렌더링) |
+| 2.4.13 Focus Appearance | AAA | — | 확인 불가: 초점 표시 크기·대비 (렌더링) |
+| 2.5.1 Pointer Gestures | A | — | 확인 불가: 스크립트 제스처 |
+| 2.5.2 Pointer Cancellation | A | — | 확인 불가: 스크립트 이벤트 |
+| 2.5.3 Label in Name | A | `accessibility.label_name_mismatch` | CSS 로 숨긴 텍스트 구분 |
+| 2.5.4 Motion Actuation | A | — | 확인 불가: 기기 동작 센서 스크립트 |
+| 2.5.5 Target Size (Enhanced) | AAA | — | 확인 불가: 컨트롤 크기 (렌더링) |
+| 2.5.6 Concurrent Input Mechanisms | AAA | — | 확인 불가: 입력 수단 제한 스크립트 |
+| 2.5.7 Dragging Movements | AA | — | 확인 불가: 드래그 대체 수단 (실행) |
+| 2.5.8 Target Size (Minimum) | AA | — | 확인 불가: 컨트롤 크기 (렌더링) |
+| 3.1.1 Language of Page | A | `meta.html_lang` `accessibility.html_lang_valid` `accessibility.html_xml_lang_mismatch` | 실제 본문 언어와 맞는지 |
+| 3.1.2 Language of Parts | AA | `accessibility.element_lang_invalid` | 외국어 구간에 lang 을 빠뜨렸는지 (언어 판별) |
+| 3.1.3 Unusual Words | AAA | — | 확인 불가: 낯선 단어 설명 (의미 판단) |
+| 3.1.4 Abbreviations | AAA | `accessibility.abbr_without_title` | abbr 로 표시하지 않은 약어 (의미 판단) |
+| 3.1.5 Reading Level | AAA | — | 확인 불가: 읽기 수준 (의미 판단) |
+| 3.1.6 Pronunciation | AAA | — | 확인 불가: 발음 표시 필요 여부 (의미 판단) |
+| 3.2.1 On Focus | A | `accessibility.onfocus_navigation` | addEventListener 로 붙인 스크립트 (실행) |
+| 3.2.2 On Input | A | `accessibility.onchange_navigation` | addEventListener 로 붙인 스크립트 (실행) |
+| 3.2.3 Consistent Navigation | AA | — | 확인 불가: 페이지 간 메뉴 순서 비교 (렌더링·의미 판단) |
+| 3.2.4 Consistent Identification | AA | — | 확인 불가: 같은 기능의 이름 일관성 (의미 판단) |
+| 3.2.5 Change on Request | AAA | `accessibility.new_window_links` `accessibility.timed_refresh` `transport.meta_refresh_redirect` `transport.js_redirect` | 스크립트로 바꾸는 맥락 |
+| 3.2.6 Consistent Help | A | — | 확인 불가: 페이지 간 도움 정보 위치 비교 (렌더링) |
+| 3.3.1 Error Identification | A | — | 확인 불가: 제출 후 오류 표시 (실행) |
+| 3.3.2 Labels or Instructions | A | `accessibility.unlabeled_form_controls` `accessibility.label_title_only` `accessibility.multiple_labels` `accessibility.fieldset_legend_missing` `accessibility.radio_group_ungrouped` | — |
+| 3.3.3 Error Suggestion | AA | — | 확인 불가: 오류 수정 제안 (실행) |
+| 3.3.4 Error Prevention (Legal, Financial, Data) | AA | — | 확인 불가: 제출 전 확인·취소 절차 (실행) |
+| 3.3.5 Help | AAA | — | 확인 불가: 도움말 충실도 (의미 판단) |
+| 3.3.6 Error Prevention (All) | AAA | — | 확인 불가: 제출 전 확인·취소 절차 (실행) |
+| 3.3.7 Redundant Entry | A | `accessibility.autocomplete_missing` `accessibility.autocomplete_invalid` | 단계 간 자동 채움 (실행) |
+| 3.3.8 Accessible Authentication (Minimum) | AA | `accessibility.paste_blocked` `accessibility.password_autocomplete_off` | CAPTCHA·인지 테스트 대체 수단 |
+| 3.3.9 Accessible Authentication (Enhanced) | AAA | `accessibility.paste_blocked` `accessibility.password_autocomplete_off` | CAPTCHA·인지 테스트 대체 수단 |
+| 4.1.1 Parsing (Obsolete and removed) | 폐지 | `accessibility.markup_errors` `accessibility.duplicate_ids` | WCAG 2.2 에서 폐지됨 (KWCAG 는 유지) |
+| 4.1.2 Name, Role, Value | A | `accessibility.invalid_aria_role` `accessibility.invalid_aria_attr` `accessibility.aria_invalid_value` `accessibility.aria_required_attr_missing` `accessibility.aria_name_prohibited` `accessibility.aria_deprecated_role` `accessibility.custom_control_unnamed` `accessibility.dialog_unnamed` `accessibility.unlabeled_form_controls` `accessibility.unnamed_buttons` | 상태 변화 전달 (실행) |
+| 4.1.3 Status Messages | AA | `accessibility.status_widget_unnamed` | 스크립트로 넣는 상태 메시지 (실행) |
 
 ## axe-core 규칙
 
@@ -335,6 +437,166 @@ Lighthouse 접근성 범주는 axe-core 규칙을 그대로 씁니다. 대응 �
 | security.txt | `transport.security_txt` `transport.security_txt_fields` (RFC 9116 필수 Contact·Expires) |
 | Trusted Types (CSP) | `security.trusted_types` |
 | X-XSS-Protection | 의도적으로 제외: 폐기된 헤더 (OWASP 도 사용 중단 권고) |
+
+## Open Graph·X Cards
+
+[ogp.me](https://ogp.me/) 가 정의한 속성 전체입니다. 속성 목록은 `scripts/check_coverage.py` 가 ogp.me 원문과 다시 대조합니다.
+
+| 속성 | 항목 id | 비고 |
+|---|---|---|
+| og:title | `open_graph.title` | — |
+| og:type | `open_graph.type` `open_graph.type_unknown` | — |
+| og:image | `open_graph.image` `open_graph.image_file` `links.og_image` | — |
+| og:url | `open_graph.url` `open_graph.url_host_mismatch` | — |
+| og:description | `open_graph.description` | — |
+| og:site_name | `open_graph.site_name` | — |
+| og:locale | `open_graph.locale` `meta.lang_locale_mismatch` | — |
+| og:locale:alternate | `open_graph.locale_alternate` | — |
+| og:determiner | `open_graph.determiner` | — |
+| og:image:url | `open_graph.image` | og:image 의 별칭이라 og:image 로 확인 |
+| og:image:secure_url | `open_graph.image_secure_url` | — |
+| og:image:type | `open_graph.image_type` | — |
+| og:image:width | `open_graph.image_width` `open_graph.image_file` | — |
+| og:image:height | `open_graph.image_height` `open_graph.image_file` | — |
+| og:image:alt | `open_graph.image_alt` | — |
+| og:video | `open_graph.video` | — |
+| og:video:secure_url og:video:type og:video:width og:video:height | `open_graph.video` | 하위 속성은 개별 항목 없이 og:video 존재만 확인 |
+| og:audio | `open_graph.audio` | — |
+| og:audio:secure_url og:audio:type | `open_graph.audio` | 하위 속성은 개별 항목 없이 og:audio 존재만 확인 |
+| article:published_time article:modified_time article:expiration_time article:author article:section article:tag | `open_graph.type_properties` | 값을 목록으로 보고 |
+| book:author book:isbn book:release_date book:tag | `open_graph.type_properties` | 값을 목록으로 보고 |
+| profile:first_name profile:last_name profile:username profile:gender | `open_graph.type_properties` | 값을 목록으로 보고 |
+| music:duration music:album music:album:disc music:album:track music:musician music:song music:song:disc music:song:track music:release_date music:creator | `open_graph.type_properties` | 값을 목록으로 보고 |
+| video:actor video:actor:role video:director video:writer video:duration video:release_date video:tag video:series | `open_graph.type_properties` | 값을 목록으로 보고 |
+| fb:app_id | `facebook.app_id` | — |
+
+X(Twitter) Cards 마크업 문서의 속성입니다. 공식 문서가 스크립트로 그려져 사람이 대조했습니다.
+
+| 속성 | 항목 id | 비고 |
+|---|---|---|
+| twitter:card | `twitter.card` `twitter.card_unknown` | — |
+| twitter:site twitter:site:id | `twitter.site` | :id 는 개별 항목 없음 |
+| twitter:creator twitter:creator:id | `twitter.creator` | :id 는 개별 항목 없음 |
+| twitter:title | `twitter.title` | — |
+| twitter:description | `twitter.description` | — |
+| twitter:image | `twitter.image` `links.twitter_image` | — |
+| twitter:image:alt | `twitter.image_alt` | — |
+| twitter:player twitter:player:width twitter:player:height twitter:player:stream | `twitter.player` | 하위 속성은 개별 항목 없음 |
+| twitter:app:name:* twitter:app:id:* twitter:app:url:* | `twitter.app` | 값을 목록으로 보고 |
+
+## Web App Manifest
+
+W3C Web Application Manifest 와 Manifest App Information 명세의 멤버입니다. `meta.manifest_content` 의 `members` 값에 manifest 의 최상위 멤버 이름을 모두 담습니다. 멤버 목록은 `scripts/check_coverage.py` 가 명세 원문과 다시 대조합니다.
+
+| 멤버 | 항목 id | 비고 |
+|---|---|---|
+| name short_name | `meta.manifest_content` | 값으로 보고 |
+| start_url | `meta.manifest_content` | 값으로 보고 |
+| display | `meta.manifest_content` `meta.manifest_display_valid` | — |
+| icons | `meta.manifest_icons_192_512` `meta.manifest_maskable_icon` `links.manifest` | — |
+| purpose | `meta.manifest_maskable_icon` | 아이콘 purpose |
+| id | `meta.manifest_id` | — |
+| scope | `meta.manifest_scope` | — |
+| theme_color background_color | `meta.manifest_colors` | — |
+| description | `meta.manifest_description` | — |
+| screenshots | `meta.manifest_screenshots` | — |
+| shortcuts | `meta.manifest_shortcuts` | — |
+| label form_factor platform url | `meta.manifest_screenshots` `meta.manifest_shortcuts` | screenshots·shortcuts 하위 멤버, 개수만 보고 |
+| orientation | `meta.manifest_content` | `members` 값으로만 보고 (방향 고정은 `accessibility.orientation_lock`) |
+| lang dir | `meta.manifest_content` | `members` 값으로만 보고 |
+| categories iarc_rating_id | `meta.manifest_content` | `members` 값으로만 보고 (앱 스토어용) |
+| color_scheme_dark | `meta.manifest_content` | `members` 값으로만 보고 |
+
+## HTML 폐기 속성
+
+WHATWG HTML 명세 "Obsolete features" 의 폐기 속성 목록(143줄, 속성 79종) 전체를 `accessibility.obsolete_attributes` 로 확인합니다. 명세가 "폐기되었지만 적합"으로 허용하는 값(`script charset="utf-8"`, 비어 있지 않은 `a name`, `script language="javascript"`, `style type="text/css"`, `img border="0"`)은 세지 않습니다. 목록은 [`spec.rs`](../crates/devup-access-checker/src/spec.rs) 의 `OBSOLETE_ATTRS` 에 있으며 `scripts/check_coverage.py` 가 명세 원문과 다시 대조합니다. 폐기 요소는 `accessibility.obsolete_elements` 가 확인합니다.
+
+## schema.org
+
+schema.org 는 필수 속성을 정하지 않으므로, 리치 결과 필수 속성은 [Google 리치 결과](#google-리치-결과) 표에서 다룹니다. schema.org 자체와는 타입 이름을 대조합니다. JSON-LD 의 `@type` 이 schema.org 최신 어휘(타입 1,485개)에 없으면 `structured_data.unknown_types` 로 보고합니다. 다른 어휘 접두사(`foaf:` 등)는 제외합니다. 타입 목록은 [`schema_types.rs`](../crates/devup-access-checker/src/schema_types.rs) 에 있으며 `scripts/check_coverage.py` 가 schema.org 최신 목록과 다시 대조합니다.
+
+## MDN 폐기 헤더
+
+MDN browser-compat-data 가 폐기(deprecated) 또는 비표준으로 표시한 HTTP 헤더 전체입니다. 응답 헤더는 `security.deprecated_headers` 로 확인합니다. 목록은 `scripts/check_coverage.py` 가 browser-compat-data 최신판과 다시 대조합니다.
+
+| 헤더 | 항목 id |
+|---|---|
+| Attribution-Reporting-Register-Source | `security.deprecated_headers` |
+| Attribution-Reporting-Register-Trigger | `security.deprecated_headers` |
+| Content-DPR | `security.deprecated_headers` |
+| Expect-CT | `security.deprecated_headers` |
+| Feature-Policy | `security.deprecated_headers` (`security.permissions_policy` 로 대체) |
+| Observe-Browsing-Topics | `security.deprecated_headers` |
+| Pragma | `security.deprecated_headers` |
+| Report-To | `security.deprecated_headers` |
+| Warning | `security.deprecated_headers` |
+| X-XSS-Protection | `security.deprecated_headers` |
+| Attribution-Reporting-Eligible | 해당 없음: 요청 헤더 |
+| Attribution-Reporting-Support | 해당 없음: 요청 헤더 |
+| DNT | 해당 없음: 요청 헤더 |
+| DPR | 해당 없음: 요청 헤더 |
+| Device-Memory | 해당 없음: 요청 헤더 |
+| Sec-Browsing-Topics | 해당 없음: 요청 헤더 |
+| Sec-CH-UA-Full-Version | 해당 없음: 요청 헤더 |
+| Viewport-Width | 해당 없음: 요청 헤더 |
+| Width | 해당 없음: 요청 헤더 |
+| Critical-CH | 비표준이지만 폐기 아님: 대상 아님 |
+| Idempotency-Key | 비표준이지만 폐기 아님: 대상 아님 |
+| Sec-CH-Device-Memory | 해당 없음: 요청 헤더 |
+| Snapshot-Content-Location | 비표준이지만 폐기 아님: 대상 아님 |
+| X-DNS-Prefetch-Control | `security.x_dns_prefetch_control` (OWASP 권장 목록) |
+
+## 네이버 서치어드바이저
+
+[웹마스터 가이드](https://searchadvisor.naver.com/guide) 54쪽 전체를 사람이 대조했습니다. 가이드 목록은 사이트의 sitemap.xml 에서 받았습니다. 웹마스터 도구에서만 할 수 있는 일(등록·수집 요청·리포트)은 마지막 줄에 모았습니다.
+
+| 가이드 (쪽) | 요구 사항 | 항목 id |
+|---|---|---|
+| seo-basic-intro, faq-start-register | 사이트 소유 확인 meta, head 안에 있어야 함 | `meta.naver_site_verification` `meta.head_elements_in_body` |
+| seo-basic-intro, seo-basic-robots | Yeti 허용, 파비콘 수집 허용, CSS·JS 수집 허용 | `crawling.robots_allows.yeti` `crawling.robots_blocks_favicon` `crawling.robots_blocks_resources_yeti` |
+| seo-basic-robots | robots.txt 위치·형식·크기·Sitemap 선언 | `crawling.robots_txt` `crawling.robots_oversize` `crawling.robots_invalid_lines` `crawling.robots_sitemap_directive` |
+| seo-basic-firewall, faq-serpmissing | 방화벽이 Yeti 를 막지 않음 | `crawling.ua_access.yeti` (UA 만 바꾼 요청, IP 검증 방화벽은 재현 못 함) |
+| seo-basic-intro, markup-structure | meta refresh·JS 리다이렉트 대신 HTTP 리다이렉트 | `transport.js_redirect` `transport.meta_refresh_redirect` `indexing.meta_refresh` |
+| seo-basic-redirect | 리다이렉트 5회 이하, 경유 URL 모두 수집 가능, 301/302 구분 | `transport.redirect_hops_excess` `transport.redirect_chain_robots_blocked` `transport.redirect` `transport.temporary_redirect` |
+| seo-basic-create | 표준 호스트명(밑줄 금지), 없는 페이지는 404, 오류 페이지로 리다이렉트 금지 | `transport.hostname_invalid` `not_found_page.returns_404` `not_found_page.redirects` |
+| seo-basic-create, seo-advanced-url | 한 호스트로 통일, https, 호스팅 기본 도메인 지양, 파라미터 최소화 | `transport.host_variant_duplicate` `transport.http_to_https_redirect` `transport.https` `transport.hosting_subdomain` `content.parameter_heavy_links` |
+| seo-basic-http, report-crawl-refine | HTTP 상태 코드, HTML 4MB·응답 시간 | `transport.http_status` `performance.html_bytes` `performance.response_time` |
+| markup-structure | canonical 은 절대 경로, robots meta, 네이버 전용 지시어(nosourceinfo) | `meta.canonical` `meta.canonical_relative` `indexing.meta_robots` `indexing.naver_directives` |
+| markup-content | title·description 길이, 제목과 설명이 같음, 단어 반복, Open Graph·Twitter | `meta.title` `meta.description` `meta.description_same_as_title` `meta.repeated_terms` `open_graph.title` `open_graph.description` `open_graph.image` `open_graph.url` `open_graph.type` `twitter.card` `twitter.title` `twitter.description` `twitter.image` `twitter.domain` |
+| markup-content | og:image 크기·용량 | `open_graph.image_file` (가로·세로·바이트를 값으로 보고) |
+| markup-mobile | viewport, 별도 모바일 URL 은 데스크톱 canonical, UA 별 응답 | `meta.viewport` `meta.mobile_site_canonical` `crawling.vary_user_agent` |
+| markup-favicon | favicon 존재·크기, 절대 경로, 같은 rel 은 하나 | `meta.favicon` `meta.favicon_ico_file` `meta.favicon_size` `meta.favicon_relative_href` `meta.favicon_duplicate_rel` |
+| report-seo | 서버·문서 인코딩 일치, title 은 head 안, frame 지양, 링크 텍스트 | `meta.charset_mismatch` `meta.head_elements_in_body` `accessibility.obsolete_elements` `accessibility.empty_links` |
+| seo-advanced-javascript | 서버 렌더링, fragment(#) URL 금지, JS URL 에 타임스탬프 금지 | `content.csr_shell` `content.fragment_route_links` `crawling.script_cache_busting` |
+| resource-and-link, faq-sublink | 크롤링 가능한 링크(함수 호출 href 금지), nosublink | `content.uncrawlable_links` `content.pseudo_js_links` `indexing.naver_directives` |
+| request-feed | RSS 형식, item 1개 이상, 같은 호스트 절대 URL, 10MB 미만, 본문 전체 | `crawling.feed_link` `crawling.feed_valid` `crawling.feed_items` `crawling.feed_foreign_host` `crawling.feed_oversize` `crawling.feed_full_content` |
+| request-feed | sitemap 형식·5만 URL·10MB 제출 한도 | `crawling.sitemap_xml` `crawling.sitemap_entries` `crawling.sitemap_over_10mb` `crawling.sitemap_foreign_host` |
+| seo-advanced-indexing, faq-serpremove | noindex, robots.txt 로 막으면 noindex 를 못 읽음 | `indexing.meta_noindex` `indexing.header_noindex` `indexing.noindex_blocked_by_robots` |
+| structured-data-intro | JSON-LD·Microdata, 문법 오류 | `structured_data.json_ld` `structured_data.microdata` `structured_data.json_ld_invalid` |
+| structured-data-* (13쪽) | 유형별 필수 속성 (Google 기준과 다름) | `structured_data.naver.postal_address` `structured_data.naver.breadcrumb_list` `structured_data.naver.carousel` `structured_data.naver.channel` `structured_data.naver.movie` `structured_data.naver.aggregate_rating` `structured_data.naver.recipe` `structured_data.naver.restaurant` `structured_data.naver.review` `structured_data.naver.software_app` `structured_data.naver.tv_series` `structured_data.naver.video` `structured_data.naver.video_channel` |
+| indexnow-api-key | 키 파일 | `crawling.indexnow_key_file` (키를 지정했을 때만) |
+| 확인 불가 | 웹마스터 도구 등록·수집 요청·리포트·URL 검사, IndexNow 전송, 콘텐츠 품질·어뷰징 판단, CSS 로 숨긴 텍스트, 백링크, 사이트 이전·폐쇄 절차, 검색로봇 IP 대역 | 콘솔·로그인·외부 데이터·의미 판단이 필요 |
+
+## Bing 웹마스터 가이드라인
+
+[Webmaster Guidelines](https://www.bing.com/webmasters/help/webmaster-guidelines-30fba23a) 와 관련 도움말 15편(robots meta, AI Preferences, IndexNow, 구조화 데이터, 404, robots.txt, sitemap, 사이트 인증, URL 차단, 크롤러 등)을 사람이 대조했습니다. 도움말은 스크립트로 그려져 Bing 의 도움말 API 응답으로 원문을 읽었습니다.
+
+| 절 | 요구 사항 | 항목 id |
+|---|---|---|
+| §2·§3 | sitemap, 정식 URL 만, noindex·삭제·리다이렉트 URL 제외, lastmod | `crawling.sitemap_any` `crawling.sitemap_canonical_mismatch` `crawling.sitemap_noindex_pages` `crawling.sitemap_broken_urls` `crawling.sitemap_redirected_urls` `crawling.sitemap_lastmod` |
+| §5·§6·§7 | 크롤링 가능한 링크, 중복 URL, 301/302 | `content.uncrawlable_links` `meta.canonical` `transport.url_variant.trailing_slash` `transport.url_variant.uppercase` `transport.url_variant.index_html` `transport.redirect` `transport.temporary_redirect` |
+| §8 | Bingbot 허용·렌더링 자원 허용, 파라미터 많은 URL 지양 | `crawling.robots_allows.bingbot` `crawling.robots_blocks_resources_bingbot` `crawling.ua_access.bingbot` `content.parameter_heavy_links` |
+| §9, 404 모범 사례 | 삭제된 페이지는 404, 404 페이지는 외부 호출 없이 | `not_found_page.returns_404` `not_found_page.custom` `not_found_page.third_party_calls` |
+| §10, robots meta | noindex·nosnippet·max-snippet·data-snippet, Bing 전용 지시(meta bingbot) | `indexing.meta_noindex` `indexing.snippet_controls` `indexing.bingbot_meta` |
+| §10 | Copilot 인용 제한 (nocache·noarchive) | `geo.copilot_restrictions` |
+| AI Preferences FAQ | ai-training·ai-grounding 선호 표시 (meta·헤더·robots.txt) | `geo.bing_ai_preferences` |
+| §12 | 대체 텍스트, 설명적인 이미지 파일명 | `content.img_alt_missing` `content.img_generic_filenames` |
+| §13 | title·description, 헤딩 구조, 시맨틱 요소 | `meta.title` `meta.description` `site.duplicate_titles` `content.heading_skip` `accessibility.landmark_main` |
+| 구조화 데이터 | JSON-LD·Microdata·RDFa·Microformats·Open Graph, 이름 없는 Person 무시, og:image socialonly | `structured_data.json_ld` `structured_data.microdata` `structured_data.rdfa` `structured_data.microformats` `structured_data.required.person` `open_graph.image_socialonly` |
+| robots.txt 만들기 | UTF-8, Crawl-delay, Sitemap | `crawling.robots_encoding` `crawling.robots_crawl_delay` `crawling.robots_sitemap_directive` |
+| 사이트 추가·인증 | msvalidate.01 meta, BingSiteAuth.xml | `meta.bing_site_verification` `meta.bing_site_auth_file` |
+| IndexNow | 키 파일 | `crawling.indexnow_key_file` (키를 지정했을 때만) |
+| 확인 불가 | URL 제출·IndexNow 전송, 콘텐츠 제거 도구, 크롤 속도, Bingbot IP 검증, 콘텐츠 품질·어뷰징 판단, DNS 인증, mRSS 제출, Bingbot TLS 암호군 | 콘솔·외부 호출·의미 판단·TLS 핸드셰이크 열거가 필요 |
 
 ## 생성형 검색(GEO)
 

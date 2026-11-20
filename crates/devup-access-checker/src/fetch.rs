@@ -295,6 +295,8 @@ pub struct FileProbe {
     pub size: Option<usize>,
     /// 본문이 상한을 넘어 앞부분만 보관함
     pub truncated: bool,
+    /// 받은 바이트가 UTF-8 로 올바름 (상한에서 잘린 마지막 글자는 허용)
+    pub utf8: bool,
     pub error: Option<String>,
 }
 
@@ -400,6 +402,7 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
         probe.truncated = true;
         buf.truncate(max);
     }
+    probe.utf8 = std::str::from_utf8(&buf).map_or_else(|e| e.error_len().is_none(), |_| true);
     let body = decode_body(&buf, &headers);
     // 텍스트 파일 본문에 차단 공급자 이름이 언급된 경우를 오인하지 않도록 HTML 응답만 본다
     if let Some(vendor) = looks_like_html(&body)

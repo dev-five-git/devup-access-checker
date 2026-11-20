@@ -22,10 +22,14 @@ mod html;
 mod llms;
 mod model;
 mod more;
+mod naver_ld;
 mod robots;
 mod rules;
+mod schema_types;
+mod search;
 mod signals;
 mod sitemap;
+mod spec;
 mod trust;
 
 use std::time::{Duration, Instant};
@@ -78,7 +82,7 @@ pub struct Options {
     pub probe_timeout: Duration,
     /// favicon / og:image 등 링크 접근 가능 여부 검증
     pub check_links: bool,
-    /// AI 크롤러 User-Agent 로 페이지를 요청해 응답 확인
+    /// AI·검색 크롤러(Yeti·Bingbot) User-Agent 로 페이지를 요청해 응답 확인
     pub check_ai_user_agents: bool,
     /// http:// 버전 리다이렉트, 리다이렉트 체인, www 변형, 압축 여부 확인
     pub check_transport: bool,
@@ -90,6 +94,8 @@ pub struct Options {
     pub check_resources: bool,
     /// 여러 페이지 표본 크롤링 페이지 수 (0 = 생략). sitemap 을 우선 쓰고 부족하면 내부 링크로 채운다.
     pub page_samples: usize,
+    /// IndexNow 키. 지정하면 `https://호스트/{키}.txt` 키 파일을 확인한다 (키 파일 이름은 비밀이라 찾아낼 수 없음)
+    pub indexnow_key: Option<String>,
 }
 
 impl Default for Options {
@@ -105,6 +111,7 @@ impl Default for Options {
             internal_link_samples: 10,
             page_samples: 10,
             check_resources: true,
+            indexnow_key: None,
         }
     }
 }
@@ -233,7 +240,7 @@ impl Checker {
 
         let transport_fut = async {
             if !opts.check_transport {
-                return (None, None, None, None);
+                return (None, None, None, None, Vec::new());
             }
             let mut http_url = base.clone();
             // 대상은 항상 http(s) 이므로 스킴 변경은 실패하지 않는다
@@ -247,22 +254,52 @@ impl Checker {
                 fetch::probe_status(&quick, &http_url).await
             };
             let enc_fut = probe_encoding(&opts.user_agent, opts.probe_timeout, &base);
-            let chain_fut =
-                fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, &target, 10);
+            let chain_fut = async {
+                let chain =
+                    fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, &target, 10).await;
+                // 최종 호스트가 아닌 경유 호스트의 robots.txt (최대 3곳)
+                let mut hosts: Vec<Url> = Vec::new();
+                for h in chain.iter().flatten() {
+                    if let Ok(u) = Url::parse(&h.url)
+                        && u.host_str() != base.host_str()
+                        && !hosts.iter().any(|x| x.host_str() == u.host_str())
+                        && hosts.len() < 3
+                    {
+                        hosts.push(u.join("/robots.txt").expect("join path"));
+                    }
+                }
+                let robots = join_all(hosts.iter().map(|u| {
+                    let probe = &probe;
+                    async move {
+                        let host = u.host_str().unwrap_or_default().to_string();
+                        (
+                            host,
+                            fetch::probe_file(probe, u, fetch::Expected::PlainText).await,
+                        )
+                    }
+                }))
+                .await;
+                (chain, robots)
+            };
             let variant_fut = probe_host_variant(&probe, host_variant(&base));
-            let (h, e, c, v) = tokio::join!(http_fut, enc_fut, chain_fut, variant_fut);
-            (Some(h), Some(e), Some(c), v)
+            let (h, e, (c, r), v) = tokio::join!(http_fut, enc_fut, chain_fut, variant_fut);
+            (Some(h), Some(e), Some(c), v, r)
         };
 
         let ai_fut = async {
             if !opts.check_ai_user_agents {
                 return Vec::new();
             }
-            join_all(checks::AI_USER_AGENTS.iter().map(|(id, ua)| {
-                let c = fetch::build_client(ua, opts.probe_timeout);
-                let base = &base;
-                async move { (*id, fetch::probe_ua(&c, base).await) }
-            }))
+            join_all(
+                checks::AI_USER_AGENTS
+                    .iter()
+                    .chain(checks::SEARCH_USER_AGENTS)
+                    .map(|(id, ua)| {
+                        let c = fetch::build_client(ua, opts.probe_timeout);
+                        let base = &base;
+                        async move { (*id, fetch::probe_ua(&c, base).await) }
+                    }),
+            )
             .await
         };
 
@@ -669,6 +706,48 @@ impl Checker {
             })
         };
 
+        // 검색엔진 가이드: 피드 본문, Bing 인증 파일, 없는 경로 리다이렉트, IndexNow 키 파일
+        let search_fut = async {
+            let feed = async {
+                let url = facts
+                    .feeds
+                    .first()
+                    .and_then(|f| facts.link_base(&base).join(f).ok())
+                    .filter(|_| opts.check_links)?;
+                Some(fetch::probe_file(&probe, &url, Xml).await)
+            };
+            let bing_url = at("/BingSiteAuth.xml");
+            let bing = fetch::probe_file(&probe, &bing_url, Xml);
+            let not_found_chain = async {
+                if !opts.check_transport {
+                    return None;
+                }
+                Some(
+                    fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, not_found_url, 5)
+                        .await,
+                )
+            };
+            let indexnow = async {
+                let key = opts.indexnow_key.as_deref()?.trim().to_string();
+                let valid = (8..=128).contains(&key.len())
+                    && key.bytes().all(|b| b.is_ascii_hexdigit() || b == b'-');
+                if !valid {
+                    return Some((key, None));
+                }
+                let url = at(&format!("/{key}.txt"));
+                Some((key, Some(fetch::probe_file(&probe, &url, PlainText).await)))
+            };
+            let (feed, bing, not_found_chain, indexnow) =
+                tokio::join!(feed, bing, not_found_chain, indexnow);
+            checks::SearchProbes {
+                feed,
+                bing_site_auth: Some(bing),
+                not_found_chain,
+                chain_robots: Vec::new(),
+                indexnow,
+            }
+        };
+
         // ── 모든 독립 작업을 한 번에 ──
         let (
             (sitemap, robots, sitemap_detail, site),
@@ -689,11 +768,12 @@ impl Checker {
             ),
             not_found,
             links,
-            (http_version, encoding, redirect_chain, host_variant),
+            (http_version, encoding, redirect_chain, host_variant, chain_robots),
             ai_ua,
             (tls, url_variants, og_image, internal_samples),
             (manifest, favicon_image, static_asset),
             (canonical_target, hreflang_targets, external_css, page_weight),
+            mut search,
         ) = tokio::join!(
             sitemap_chain,
             files_fut,
@@ -704,7 +784,9 @@ impl Checker {
             async { tokio::join!(tls_fut, variants_fut, og_fut, internal_fut) },
             async { tokio::join!(manifest_fut, favicon_fut, asset_fut) },
             async { tokio::join!(canonical_fut, hreflang_fut, css_fut, weight_fut) },
+            search_fut,
         );
+        search.chain_robots = chain_robots;
         let well_known = checks::WellKnown {
             favicon_ico,
             apple_touch_icon,
@@ -730,6 +812,7 @@ impl Checker {
             manifest,
             favicon_image,
             static_asset,
+            search,
             now: std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
                 .map(|d| d.as_secs() as i64)

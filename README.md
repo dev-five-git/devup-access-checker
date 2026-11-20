@@ -29,11 +29,12 @@ devup-access-checker a.com b.com --only-missing
 | `-f, --format text\|json` | 출력 형식 |
 | `--only-missing` | 없는 항목만 출력 (text) |
 | `--no-links` | favicon · og:image 등 링크 접근, og:image 크기, 내부 링크 표본 검증 생략 |
-| `--no-ai-ua` | AI 크롤러 User-Agent 요청 생략 |
+| `--no-ai-ua` | AI·검색 크롤러(Yeti·Bingbot) User-Agent 요청 생략 |
 | `--no-transport` | 리다이렉트 체인 · HTTP→HTTPS · www/URL 변형 · TLS 인증서 · 압축 확인 생략 |
 | `--no-resources` | 외부 CSS·JS·이미지 분석(초점 표시, font-display, 페이지 무게) 생략 |
 | `--pages <수>` | 여러 페이지 표본 수 (기본 10, 0이면 생략) |
 | `--timeout <초>` | 대상 페이지 timeout (기본 30) |
+| `--indexnow-key <키>` | IndexNow 키 파일(`/{키}.txt`) 확인. 키 파일 이름은 비밀이라 지정해야만 확인합니다 |
 
 URL을 여러 개 주면 동시에 점검하고, 결과는 입력 순서대로 출력합니다. 종료 코드: `0` 성공, `2` 하나 이상의 URL을 가져오지 못함.
 
@@ -98,13 +99,14 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 
 옵션과 상황에 따라 일부 항목이 빠질 수 있습니다.
 
-- `crawling.sitemap_entries` · `sitemap_lastmod` · `sitemap_foreign_host` · `sitemap_broken_urls` · `sitemap_noindex_pages` · `sitemap_canonical_mismatch` · `sitemap_oversize`는 sitemap(기본 경로 또는 robots.txt 선언)을 찾았을 때만 나옵니다. sitemap index이면 `sitemap_noindex_pages`와 `sitemap_canonical_mismatch`는 나오지 않습니다.
+- `crawling.sitemap_entries` · `sitemap_lastmod` · `sitemap_foreign_host` · `sitemap_broken_urls` · `sitemap_noindex_pages` · `sitemap_canonical_mismatch` · `sitemap_oversize` · `sitemap_over_10mb`는 sitemap(기본 경로 또는 robots.txt 선언)을 찾았을 때만 나옵니다. sitemap index이면 `sitemap_noindex_pages`와 `sitemap_canonical_mismatch`는 나오지 않습니다.
 - `transport.host_variant_duplicate`는 도메인 대상(IP·localhost 제외)일 때만 나옵니다. `transport.url_variant.*`는 경로 모양에 따라 해당하는 변형만 나옵니다.
-- `--no-links`를 쓰면 `links.*`, `open_graph.image_file`, `content.broken_internal_links`, `meta.favicon_size`가 빠지고 `meta.manifest_*`는 `not_applicable`이 됩니다.
+- `--no-links`를 쓰면 `links.*`, `open_graph.image_file`, `content.broken_internal_links`, `meta.favicon_size`가 빠지고 `meta.manifest_*`와 `crawling.feed_*`는 `not_applicable`이 됩니다.
 - `performance.static_asset_cache`는 같은 호스트의 script·stylesheet가 있을 때만 나옵니다.
-- `--no-ai-ua`를 쓰면 `geo.ua_access.*`가 빠집니다.
+- `--no-ai-ua`를 쓰면 `geo.ua_access.*`와 `crawling.ua_access.*`가 빠집니다.
 - `--pages 0`을 쓰면 `site.*`가 빠집니다. 표본은 sitemap(index이면 첫 하위 sitemap)에서 먼저 고르고, 부족하면 페이지 안 내부 링크로 채웁니다. 대상 페이지와 다른 호스트의 URL은 제외합니다.
-- `--no-transport`를 쓰면 `transport.http_to_https_redirect` · `redirect` · `temporary_redirect` · `host_variant_duplicate` · `tls_certificate` · `url_variant.*`와 `performance.compression`이 빠집니다.
+- `--no-transport`를 쓰면 `transport.http_to_https_redirect` · `redirect` · `temporary_redirect` · `host_variant_duplicate` · `tls_certificate` · `url_variant.*`와 `performance.compression`이 빠지고, `transport.redirect_hops_excess` · `redirect_chain_robots_blocked`와 `not_found_page.redirects`는 `not_applicable`이 됩니다.
+- `crawling.indexnow_key_file`은 `--indexnow-key`(`Options::indexnow_key`)를 주었을 때만 확인하고, 주지 않으면 `not_applicable`입니다.
 
 웹 접근성(`accessibility.*`)은 정적 HTML만으로 판별할 수 있는 항목만 다룹니다. 색 대비, 키보드 초점 이동, 화면 낭독 순서처럼 렌더링이 필요한 항목은 포함하지 않습니다.
 
@@ -134,6 +136,9 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `indexing.header_noindex` | X-Robots-Tag noindex |
 | `indexing.meta_refresh` | meta refresh 리다이렉트 |
 | `indexing.snippet_controls` | 스니펫 제한 지시어 (nosnippet·max-snippet 등) |
+| `indexing.naver_directives` | 네이버 전용 지시어 (nosourceinfo·nosublinks·nosublink) |
+| `indexing.bingbot_meta` | Bing 전용 robots 지시 (meta bingbot·X-Robots-Tag bingbot:) |
+| `indexing.noindex_blocked_by_robots` | robots.txt 로 막혀 noindex 를 볼 수 없음 |
 | `open_graph.title` | og:title |
 | `open_graph.description` | og:description |
 | `open_graph.image` | og:image |
@@ -232,6 +237,8 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `geo.meta_noai` | meta noai / noimageai 지시 |
 | `not_found_page.returns_404` | 없는 경로에 404 응답 |
 | `not_found_page.custom` | 커스텀 404 페이지 |
+| `not_found_page.third_party_calls` | 404 페이지의 외부 호출 |
+| `not_found_page.redirects` | 없는 경로가 리다이렉트됨 |
 | `links.favicon` | favicon 접근 |
 | `links.apple_touch_icon` | apple-touch-icon 접근 |
 | `links.canonical` | canonical 접근 |
@@ -247,8 +254,22 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `open_graph.image_height` | og:image:height |
 | `open_graph.image_alt` | og:image:alt |
 | `open_graph.image_file` | og:image 실제 파일 |
+| `open_graph.image_type` | og:image:type |
+| `open_graph.image_secure_url` | og:image:secure_url |
+| `open_graph.locale_alternate` | og:locale:alternate |
+| `open_graph.video` | og:video |
+| `open_graph.audio` | og:audio |
+| `open_graph.determiner` | og:determiner |
+| `open_graph.type_unknown` | 명세에 없는 og:type 값 |
+| `open_graph.type_properties` | og:type 별 속성 (article:published_time 등) |
+| `open_graph.image_socialonly` | og:image socialonly (Bing 뉴스) |
 | `twitter.site` | twitter:site |
 | `twitter.creator` | twitter:creator |
+| `twitter.image_alt` | twitter:image:alt |
+| `twitter.player` | twitter:player |
+| `twitter.app` | twitter:app:* (앱 카드) |
+| `twitter.card_unknown` | 명세에 없는 twitter:card 값 |
+| `twitter.domain` | twitter:domain |
 | `structured_data.hreflang_x_default` | hreflang x-default |
 | `structured_data.hreflang_self` | hreflang 자기 참조 |
 | `structured_data.required.organization` | Organization 스키마 필수 속성 |
@@ -280,11 +301,16 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `structured_data.required.video` | VideoObject 스키마 필수 속성 |
 | `structured_data.required.item_list` | ItemList 스키마 필수 속성 |
 | `structured_data.required.merchant_return_policy` | MerchantReturnPolicy 스키마 필수 속성 |
+| `structured_data.required.person` | Person 스키마 필수 속성 |
 | `content.heading_skip` | 헤딩 레벨 건너뜀 |
 | `content.internal_nofollow` | 내부 링크 nofollow |
 | `content.broken_internal_links` | 내부 링크 표본 중 비정상 응답 |
 | `content.uncrawlable_links` | 검색엔진이 따라갈 수 없는 링크 (href 없음·javascript:) |
 | `content.plugins` | 플러그인 콘텐츠 (Flash·Java 등) |
+| `content.fragment_route_links` | 해시(#!·#/) 라우트 링크 |
+| `content.pseudo_js_links` | 의사 자바스크립트 링크 (href="fn()"·href="#"+onclick) |
+| `content.img_generic_filenames` | 의미 없는 이미지 파일명 (IMG_1234·숫자·해시) |
+| `content.parameter_heavy_links` | 파라미터가 많은 내부 링크 (3개 이상) |
 | `performance.render_blocking_scripts` | head 렌더링 차단 스크립트 (async/defer 없음) |
 | `performance.head_stylesheets` | head 외부 스타일시트 |
 | `performance.preconnect` | preconnect / dns-prefetch |
@@ -383,6 +409,17 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `accessibility.paste_blocked` | 붙여넣기를 막은 입력 요소 |
 | `accessibility.identical_link_text` | 같은 텍스트인데 목적지가 다른 링크 |
 | `accessibility.orientation_lock` | 화면 방향 고정 (orientation 미디어 쿼리 + 회전) |
+| `accessibility.viewport_fixed_width` | 고정 너비 viewport (리플로 불가) |
+| `accessibility.site_search` | 사이트 검색 (search 요소·role=search·type=search) |
+| `accessibility.breadcrumb_nav` | 이동 경로(브레드크럼) 표시 |
+| `accessibility.abbr_without_title` | title 없는 abbr (약어 설명 없음) |
+| `accessibility.onchange_navigation` | 값만 바꿔도 이동·제출하는 onchange |
+| `accessibility.password_autocomplete_off` | 자동 완성을 끈 비밀번호 칸 |
+| `accessibility.reduced_motion` | 움직임 줄이기 설정 대응 (prefers-reduced-motion) |
+| `accessibility.justified_text` | 양쪽 정렬 텍스트 (text-align: justify) |
+| `accessibility.obsolete_attributes` | 폐기된 HTML 속성 (align·bgcolor·border 등) |
+| `accessibility.onfocus_navigation` | 초점만 받아도 이동·제출하는 onfocus |
+| `accessibility.video_audio_description_missing` | 음성 해설 트랙 없는 영상 |
 | `trust.privacy_policy` | 개인정보처리방침 링크 |
 | `trust.terms` | 이용약관 링크 |
 | `trust.phone` | 전화번호 링크 (tel:) |
@@ -415,6 +452,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `security.x_dns_prefetch_control` | X-DNS-Prefetch-Control |
 | `security.x_permitted_cross_domain_policies` | X-Permitted-Cross-Domain-Policies |
 | `security.info_disclosure_headers` | 버전·내부 정보를 노출하는 헤더 (OWASP 제거 권장) |
+| `security.deprecated_headers` | 폐기된 응답 헤더 (X-XSS-Protection·Expect-CT 등) |
 | `performance.static_asset_cache` | 정적 리소스 Cache-Control |
 | `performance.dom_size` | DOM 크기 |
 | `performance.third_party_scripts` | 서드파티 스크립트 호스트 |
@@ -423,6 +461,21 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `crawling.robots_crawl_delay` | robots.txt Crawl-delay |
 | `crawling.robots_invalid_lines` | robots.txt 해석 불가 줄 |
 | `crawling.sitemap_oversize` | sitemap 한도 초과 (50MB 또는 5만 URL) |
+| `crawling.script_cache_busting` | JS URL 의 타임스탬프·해시 쿼리 |
+| `crawling.robots_blocks_resources_yeti` | robots.txt 가 CSS/JS 차단 (Yeti) |
+| `crawling.robots_blocks_resources_bingbot` | robots.txt 가 CSS/JS 차단 (Bingbot) |
+| `crawling.robots_blocks_favicon` | robots.txt 가 favicon 차단 |
+| `crawling.sitemap_over_10mb` | sitemap 10MB 이상 (네이버 제출 한도) |
+| `crawling.ua_access.yeti` | 검색 크롤러 UA 응답 (yeti) |
+| `crawling.ua_access.bingbot` | 검색 크롤러 UA 응답 (bingbot) |
+| `crawling.feed_valid` | 피드 형식 유효 (RSS·Atom) |
+| `crawling.feed_items` | 피드 item 수 |
+| `crawling.feed_foreign_host` | 피드 안 다른 호스트·상대 경로 URL |
+| `crawling.feed_oversize` | 피드 10MB 이상 |
+| `crawling.feed_full_content` | 피드 본문 전체 포함 |
+| `crawling.robots_encoding` | robots.txt UTF-8 인코딩 |
+| `crawling.sitemap_redirected_urls` | sitemap 표본 중 리다이렉트되는 URL |
+| `crawling.indexnow_key_file` | IndexNow 키 파일 |
 | `geo.question_headings` | 질문형 헤딩 (h2~h4) |
 | `geo.lists` | 목록 (항목 2개 이상 ul/ol, dl) |
 | `geo.tables` | 표 |
@@ -431,11 +484,46 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `geo.ai_catalog_legacy` | ARD 이전 위치 (ai-catalog) |
 | `geo.webmcp_forms` | WebMCP 선언형 주석이 있는 폼 (toolname) |
 | `geo.webmcp_script` | WebMCP 명령형 API 사용 흔적 (navigator.modelContext) |
+| `geo.copilot_restrictions` | Copilot 인용 제한 (noarchive·nocache) |
+| `geo.bing_ai_preferences` | Bing AI 학습·그라운딩 선호 표시 |
 | `structured_data.speakable` | speakable 속성 |
 | `meta.canonical_target_noindex` | canonical 대상 페이지 noindex |
 | `meta.canonical_target_mismatch` | canonical 대상이 2xx 아님 또는 다른 canonical |
 | `meta.doctype` | HTML5 doctype (<!DOCTYPE html>) |
+| `meta.manifest_id` | manifest id |
+| `meta.manifest_scope` | manifest scope |
+| `meta.manifest_description` | manifest description |
+| `meta.manifest_screenshots` | manifest screenshots |
+| `meta.manifest_shortcuts` | manifest shortcuts |
+| `meta.manifest_maskable_icon` | manifest maskable 아이콘 |
+| `meta.manifest_colors` | manifest theme_color·background_color |
+| `meta.manifest_display_valid` | manifest display 값 (fullscreen·standalone·minimal-ui·browser) |
+| `meta.canonical_relative` | canonical 상대 경로 |
+| `meta.favicon_relative_href` | favicon 상대 경로 |
+| `meta.favicon_duplicate_rel` | 같은 rel 의 favicon 중복 |
+| `meta.charset_mismatch` | 헤더·meta charset 불일치 |
+| `meta.head_elements_in_body` | body 안에 있는 head 전용 요소 |
+| `meta.description_same_as_title` | description 이 title 과 동일 |
+| `meta.repeated_terms` | title·description 반복 단어 |
+| `meta.mobile_site_canonical` | 모바일 사이트 → 데스크톱 canonical |
+| `meta.bing_site_auth_file` | Bing 사이트 인증 파일 (/BingSiteAuth.xml) |
 | `structured_data.hreflang_reciprocal` | hreflang 상호 참조 |
+| `structured_data.unknown_types` | schema.org 에 없는 @type |
+| `structured_data.rdfa` | RDFa |
+| `structured_data.microformats` | Microformats (hCard·hRecipe·hReview 등) |
+| `structured_data.naver.postal_address` | 네이버 주소 필수 속성 |
+| `structured_data.naver.breadcrumb_list` | 네이버 이동 경로 필수 속성 |
+| `structured_data.naver.carousel` | 네이버 캐러셀 필수 속성 |
+| `structured_data.naver.channel` | 네이버 연관 채널 필수 속성 |
+| `structured_data.naver.movie` | 네이버 영화 필수 속성 |
+| `structured_data.naver.aggregate_rating` | 네이버 평점 필수 속성 |
+| `structured_data.naver.recipe` | 네이버 레시피 필수 속성 |
+| `structured_data.naver.restaurant` | 네이버 식당 필수 속성 |
+| `structured_data.naver.review` | 네이버 리뷰 필수 속성 |
+| `structured_data.naver.software_app` | 네이버 소프트웨어 필수 속성 |
+| `structured_data.naver.tv_series` | 네이버 TV 시리즈 필수 속성 |
+| `structured_data.naver.video` | 네이버 동영상 필수 속성 |
+| `structured_data.naver.video_channel` | 네이버 동영상 채널 필수 속성 |
 | `performance.external_css` | 외부 CSS 분석 |
 | `performance.font_face_without_display` | font-display 없는 @font-face |
 | `performance.page_weight` | 페이지 리소스 무게 |
@@ -468,3 +556,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `transport.js_redirect` | JavaScript 리다이렉트 (빈 페이지의 location 이동, 따라감) |
 | `transport.client_redirect_total` | 클라이언트 측 리다이렉트 수 |
 | `transport.security_txt_fields` | security.txt 필수 필드 (Contact·Expires) |
+| `transport.hostname_invalid` | 표준에 어긋난 호스트명 (밑줄 등) |
+| `transport.hosting_subdomain` | 호스팅 제공 기본 도메인 (github.io 등) |
+| `transport.redirect_hops_excess` | 리다이렉트 5회 초과·루프 |
+| `transport.redirect_chain_robots_blocked` | 리다이렉트 경유 URL robots 차단 |

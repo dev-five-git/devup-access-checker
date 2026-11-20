@@ -25,6 +25,7 @@ tokio.workspace = true
 futures = "0.3"
 encoding_rs = "0.8"
 flate2 = "1.1.11"
+psl = "2.1.258"
 
 [dev-dependencies]
 wiremock = "0.6"
