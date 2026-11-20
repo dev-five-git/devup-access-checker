@@ -280,6 +280,8 @@ impl Checker {
             "/.well-known/apple-app-site-association",
             "/.well-known/assetlinks.json",
             "/ads.txt",
+            "/.well-known/ard.json",
+            "/.well-known/ai-catalog.json",
         ]
         .map(at);
         let [
@@ -296,6 +298,8 @@ impl Checker {
             aasa_url,
             assetlinks_url,
             ads_url,
+            ard_url,
+            ai_catalog_url,
         ] = &urls;
         use fetch::Expected::{Binary, Json, PlainText, Xml};
 
@@ -424,6 +428,8 @@ impl Checker {
                 fetch::probe_file(&probe, assetlinks_url, Json),
                 fetch::probe_file(&probe, ads_url, PlainText),
                 fetch::probe_file(&probe, &md_url, PlainText),
+                fetch::probe_file(&probe, ard_url, Json),
+                fetch::probe_file(&probe, ai_catalog_url, Json),
             )
         };
 
@@ -678,6 +684,8 @@ impl Checker {
                 assetlinks,
                 ads_txt,
                 markdown_version,
+                ard,
+                ai_catalog,
             ),
             not_found,
             links,
@@ -705,6 +713,8 @@ impl Checker {
             apple_app_site_association,
             assetlinks,
             ads_txt,
+            ard,
+            ai_catalog,
         };
 
         let extended = checks::Extended {

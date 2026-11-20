@@ -4,6 +4,8 @@
 
 표의 항목 id 는 모두 [`CATALOG`](../crates/devup-access-checker/src/catalog.rs)에 있으며, 테스트(`coverage_doc_ids_exist`)가 이를 확인합니다.
 
+axe-core 규칙과 Lighthouse 감사 목록은 `python scripts/check_coverage.py` 로 공식 저장소의 최신 목록과 다시 대조할 수 있습니다. 새 규칙이 생기면 대조표에 없는 이름을 출력합니다.
+
 - [KWCAG 2.2 (33개 검사항목)](#kwcag-22)
 - [axe-core 규칙](#axe-core-규칙)
 - [Lighthouse](#lighthouse)
@@ -62,7 +64,8 @@
 | area-alt | `accessibility.area_alt_missing` |
 | aria-allowed-attr | 일부: `accessibility.invalid_aria_attr` (역할별 허용 속성 표는 미적용) |
 | aria-allowed-role | 미적용: 요소별 허용 역할 표가 방대하고 오탐이 많음 |
-| aria-command-name, aria-input-field-name, aria-toggle-field-name, aria-treeitem-name | `accessibility.custom_control_unnamed` |
+| aria-command-name, aria-input-field-name, aria-toggle-field-name, aria-treeitem-name, aria-tab-name | `accessibility.custom_control_unnamed` |
+| accesskeys | `accessibility.duplicate_accesskeys` |
 | aria-deprecated-role | `accessibility.aria_deprecated_role` |
 | aria-dialog-name | `accessibility.dialog_unnamed` |
 | aria-hidden-body | `accessibility.aria_hidden_root` |
@@ -129,8 +132,32 @@
 | valid-lang | `accessibility.element_lang_invalid` |
 | video-caption | `accessibility.video_captions_missing` |
 | aria-braille-equivalent, aria-conditional-attr, aria-roledescription, aria-text, focus-order-semantics, hidden-content | 미적용: 실험적·보조 규칙 |
+| frame-tested | 해당 없음: axe 가 iframe 안을 검사했는지 알리는 내부 규칙 |
+| audio-caption, duplicate-id-active | 해당 없음: axe 에서 폐기된 규칙 (duplicate-id 계열은 `accessibility.duplicate_ids`) |
 
 ## Lighthouse
+
+[Lighthouse 기본 설정](https://github.com/GoogleChrome/lighthouse/blob/main/core/config/default-config.js)의 감사 항목입니다.
+
+### 접근성
+
+Lighthouse 접근성 범주는 axe-core 규칙을 그대로 씁니다. 대응 항목은 [axe-core 규칙](#axe-core-규칙) 표와 같습니다.
+
+| 감사 | 항목 id / 확인 불가 이유 |
+|---|---|
+| accesskeys, aria-allowed-attr, aria-allowed-role, aria-command-name, aria-conditional-attr, aria-deprecated-role, aria-dialog-name, aria-hidden-body, aria-hidden-focus, aria-input-field-name, aria-meter-name, aria-progressbar-name, aria-prohibited-attr, aria-required-attr, aria-required-children, aria-required-parent, aria-roles, aria-text, aria-toggle-field-name, aria-tooltip-name, aria-treeitem-name, aria-valid-attr, aria-valid-attr-value, autocomplete-valid, button-name, bypass, color-contrast, definition-list, dlitem, duplicate-id-aria, empty-heading, form-field-multiple-labels, frame-title, heading-order, html-has-lang, html-lang-valid, html-xml-lang-mismatch, identical-links-same-purpose, image-redundant-alt, input-button-name, input-image-alt, label, label-content-name-mismatch, landmark-one-main, link-in-text-block, link-name, list, listitem, meta-refresh, meta-viewport, object-alt, presentation-role-conflict, select-name, skip-link, svg-img-alt, tabindex, table-duplicate-name, table-fake-caption, target-size, td-has-header, td-headers-attr, th-has-data-cells, valid-lang, video-caption | axe-core 규칙 표 참조 |
+| custom-controls-labels, custom-controls-roles, focus-traps, focusable-controls, interactive-element-affordance, logical-tab-order, managed-focus, offscreen-content-hidden, use-landmarks, visual-order-follows-dom | Lighthouse 도 자동 판정하지 않는 수동 점검 항목. 일부 단서: `accessibility.custom_control_unfocusable` `accessibility.custom_control_unnamed` `accessibility.landmark_main` |
+
+### AI 에이전트 (Agentic Browsing)
+
+| 감사 | 항목 id / 확인 불가 이유 |
+|---|---|
+| llms-txt | `geo.llms_txt` `geo.llms_txt_title` `geo.llms_txt_links` (Lighthouse 와 같이 H1 제목과 링크 유무) |
+| ard-schema | `geo.ard_manifest` `geo.ai_catalog_legacy` (위치·JSON 형식까지. ARD JSON 스키마 검증은 미적용) |
+| webmcp-form-coverage | `geo.webmcp_forms` |
+| webmcp-registered-tools | 일부: `geo.webmcp_script` (인라인 스크립트의 navigator.modelContext). 실제 등록된 도구는 실행 필요 |
+| webmcp-schema-validity | 확인 불가: 실행 중 등록된 도구의 스키마 |
+| agent-accessibility-tree | 확인 불가: 브라우저가 만든 접근성 트리 필요 |
 
 ### SEO
 
@@ -165,6 +192,9 @@
 | doctype | `meta.doctype` |
 | charset | `meta.charset` |
 | bf-cache | `performance.bfcache_blocked` |
+| trusted-types-xss | `security.trusted_types` |
+| js-libraries | `meta.framework` (프레임워크 식별) |
+| baseline | 확인 불가: 페이지가 쓰는 웹 기능의 브라우저 지원 데이터와 실행 필요 |
 | image-aspect-ratio, image-size-responsive | 확인 불가: 렌더링 크기 |
 | geolocation-on-start, notification-on-start | 확인 불가: 스크립트 실행 |
 | errors-in-console, deprecations, inspector-issues, valid-source-maps, third-party-cookies | 확인 불가: 브라우저 실행 |
@@ -199,6 +229,21 @@
 | third-party-summary | `performance.third_party_scripts` |
 | uses-http2 | `transport.http2` |
 | unused-css-rules, unused-javascript, legacy-javascript, bootup-time, mainthread-work-breakdown, uses-passive-event-listeners, layout-shifts | 확인 불가: 스크립트 실행·렌더링 |
+| first-contentful-paint, largest-contentful-paint, cumulative-layout-shift, total-blocking-time, speed-index, interactive, max-potential-fid, interaction-to-next-paint | 확인 불가: 렌더링 측정 지표 |
+| cache-insight | `performance.static_asset_cache` `performance.cache_control` |
+| document-latency-insight | `transport.redirect` `performance.response_time` `performance.compression` |
+| dom-size-insight | `performance.dom_size` |
+| duplicated-javascript-insight | `performance.duplicate_scripts` |
+| font-display-insight | `performance.font_face_without_display` |
+| image-delivery-insight | `performance.modern_image_formats` `performance.large_images` `performance.img_srcset` |
+| lcp-discovery-insight | `performance.lcp_image_lazy` `performance.fetchpriority_high` `performance.image_preload` |
+| modern-http-insight | `transport.http2` |
+| network-dependency-tree-insight | `performance.css_import` `performance.preconnect` |
+| render-blocking-insight | `performance.render_blocking_scripts` `performance.head_stylesheets` |
+| third-parties-insight | `performance.third_party_scripts` |
+| viewport-insight | `meta.viewport` |
+| cls-culprits-insight, forced-reflow-insight, inp-breakdown-insight, lcp-breakdown-insight, legacy-javascript-insight | 확인 불가: 렌더링·스크립트 실행 |
+| diagnostics, final-screenshot, long-tasks, main-thread-tasks, metrics, network-requests, network-rtt, network-server-latency, non-composited-animations, resource-summary, screenshot-thumbnails, script-treemap-data, user-timings | 해당 없음: 판정이 아닌 진단용 원자료 (브라우저 실행 결과) |
 
 ## Google 검색 센터
 
@@ -242,6 +287,7 @@
 | 안전한 폼 전송 | `security.insecure_form_action` |
 | 새 창 링크 opener | `security.target_blank_noopener` |
 | security.txt | `transport.security_txt` |
+| Trusted Types (CSP) | `security.trusted_types` |
 | X-XSS-Protection | 의도적으로 제외: 폐기된 헤더 (OWASP 도 사용 중단 권고) |
 
 ## 생성형 검색(GEO)
@@ -257,6 +303,8 @@
 | 저자·날짜 | `geo.author` `geo.published_date` `geo.modified_date` |
 | 인용하기 쉬운 구조 | `geo.question_headings` `geo.lists` `geo.tables` `structured_data.type.faq_page` `structured_data.speakable` |
 | 정적 HTML 로 읽히는지 | `content.csr_shell` `geo.noscript_content` |
+| AI 에이전트용 리소스 목록 (ARD) | `geo.ard_manifest` `geo.ai_catalog_legacy` |
+| AI 에이전트가 쓸 수 있는 폼·도구 (WebMCP) | `geo.webmcp_forms` `geo.webmcp_script` |
 
 ## 확인할 수 없는 것 요약
 

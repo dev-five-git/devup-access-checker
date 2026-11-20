@@ -220,6 +220,10 @@ static EXTERNAL_RESOURCE: LazyLock<Selector> =
 static FORM: LazyLock<Selector> = LazyLock::new(|| sel("form[action]"));
 static BLANK: LazyLock<Selector> = LazyLock::new(|| sel("a[target=_blank][href]"));
 static PLUGIN: LazyLock<Selector> = LazyLock::new(|| sel("object, embed, applet"));
+static LINK_ARD: LazyLock<Selector> = LazyLock::new(|| sel("link[rel~=ard i][href]"));
+static LINK_AI_CATALOG: LazyLock<Selector> = LazyLock::new(|| sel("link[rel~=ai-catalog i][href]"));
+static ALL_FORMS: LazyLock<Selector> = LazyLock::new(|| sel("form"));
+static INLINE_SCRIPT: LazyLock<Selector> = LazyLock::new(|| sel("script:not([src])"));
 static NOSNIPPET_ATTR: LazyLock<Selector> = LazyLock::new(|| sel("[data-nosnippet]"));
 static INLINE_SPACING: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?i)(?:letter-spacing|word-spacing|line-height)\s*:[^;]*!important").unwrap()
@@ -296,6 +300,17 @@ pub struct RuleFacts {
     pub blank_without_noopener: usize,
     pub plugins: usize,
     pub data_nosnippet: usize,
+    // ----- AI 에이전트 -----
+    /// `<link rel="ard">` 대상
+    pub ard_link: Option<String>,
+    /// `<link rel="ai-catalog">` 대상 (ARD 이전 관계)
+    pub ai_catalog_link: Option<String>,
+    /// WebMCP 선언형 주석(toolname) 이 있는 폼 수
+    pub webmcp_forms: usize,
+    pub webmcp_forms_described: usize,
+    pub all_forms: usize,
+    /// 인라인 스크립트가 navigator.modelContext (WebMCP 명령형 API) 를 쓰는지
+    pub webmcp_script: bool,
 }
 
 fn in_landmark(el: &ElementRef) -> bool {
@@ -661,6 +676,28 @@ pub fn extract(doc: &Html, html: &str, page_url: &Url) -> RuleFacts {
         })
         .count();
     f.data_nosnippet = doc.select(&NOSNIPPET_ATTR).count();
+
+    // AI 에이전트: ARD 링크, WebMCP
+    let href = |s: &Selector| {
+        doc.select(s)
+            .next()
+            .and_then(|l| attr(&l, "href").and_then(|h| page_url.join(h).ok()))
+            .map(|u| u.to_string())
+    };
+    f.ard_link = href(&LINK_ARD);
+    f.ai_catalog_link = href(&LINK_AI_CATALOG);
+    for form in doc.select(&ALL_FORMS) {
+        f.all_forms += 1;
+        if attr(&form, "toolname").is_some() {
+            f.webmcp_forms += 1;
+            if attr(&form, "tooldescription").is_some() {
+                f.webmcp_forms_described += 1;
+            }
+        }
+    }
+    f.webmcp_script = doc
+        .select(&INLINE_SCRIPT)
+        .any(|s| s.text().any(|t| t.contains("modelContext")));
     f
 }
 
@@ -804,5 +841,24 @@ mod tests {
         let f = run("<html><frameset></frameset></html>");
         assert_eq!(f.text_outside_landmarks, 0);
         assert!(!f.has_landmarks);
+    }
+
+    #[test]
+    fn agent_signals() {
+        let f = run(
+            r#"<html><head><link rel="ard" href="/agents/ard.json"><link rel="AI-Catalog" href="https://a.com/c.json">
+<script>navigator.modelContext.registerTool({name: "search"})</script></head><body>
+<form toolname="search" tooldescription="사이트 검색"><input name="q"></form>
+<form toolname="login"></form><form></form></body></html>"#,
+        );
+        assert_eq!(f.ard_link.as_deref(), Some("https://a.com/agents/ard.json"));
+        assert_eq!(f.ai_catalog_link.as_deref(), Some("https://a.com/c.json"));
+        assert_eq!(
+            (f.all_forms, f.webmcp_forms, f.webmcp_forms_described),
+            (3, 2, 1)
+        );
+        assert!(f.webmcp_script);
+        let f = run("<html><body><script>var x = 1;</script></body></html>");
+        assert!(f.ard_link.is_none() && !f.webmcp_script);
     }
 }

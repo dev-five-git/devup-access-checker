@@ -88,6 +88,10 @@ pub struct WellKnown {
     pub apple_app_site_association: FileProbe,
     pub assetlinks: FileProbe,
     pub ads_txt: FileProbe,
+    /// `/.well-known/ard.json` (Agentic Resource Discovery)
+    pub ard: FileProbe,
+    /// `/.well-known/ai-catalog.json` (ARD 이전 위치)
+    pub ai_catalog: FileProbe,
 }
 
 /// robots 선언 sitemap 과 sitemap 안 URL 샘플 요청 결과.
@@ -1460,6 +1464,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     canonical_hreflang_weight_checks(&mut o, i);
     deep_checks(&mut o, i);
     rule_checks(&mut o, i);
+    agent_checks(&mut o, i);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -3847,6 +3852,91 @@ fn rule_checks(o: &mut Out, i: &Inputs) {
     }
 }
 
+/// AI 에이전트 대응 항목 (Lighthouse Agentic Browsing 대조).
+fn agent_checks(o: &mut Out, i: &Inputs) {
+    use Category::*;
+    let r = &i.facts.rules;
+    let wk = i.well_known;
+    // robots.txt 의 Agentmap: 지시어
+    let agentmap = i.robots.body.as_deref().and_then(|b| {
+        b.lines().find_map(|l| {
+            let (k, v) = l.split_once(':')?;
+            k.trim()
+                .eq_ignore_ascii_case("agentmap")
+                .then(|| v.trim().to_string())
+        })
+    });
+    // HTTP Link 헤더의 rel="ard" / rel="ai-catalog"
+    let link_header = header(&i.page.headers, "link")
+        .unwrap_or_default()
+        .to_ascii_lowercase();
+    let header_rel = |rel: &str| {
+        link_header.split(',').any(|part| {
+            part.split(';').skip(1).any(|p| {
+                p.trim()
+                    .strip_prefix("rel=")
+                    .is_some_and(|v| v.trim_matches('"').split_whitespace().any(|x| x == rel))
+            })
+        })
+    };
+    let ard_header = header_rel("ard");
+    let ard_found = wk.ard.exists || r.ard_link.is_some() || ard_header || agentmap.is_some();
+    o.push(
+        "geo.ard_manifest",
+        Geo,
+        "ARD 매니페스트 (AI 에이전트용 리소스 목록)",
+        if wk.ard.error.is_some() && !ard_found {
+            Presence::Unknown
+        } else {
+            Presence::from_bool(ard_found)
+        },
+        Some(json!({
+            "wellKnown": file_value(&wk.ard),
+            "htmlLink": r.ard_link,
+            "linkHeader": ard_header,
+            "robotsAgentmap": agentmap,
+        })),
+        Some("/.well-known/ard.json · <link rel=\"ard\"> · Link 헤더 · robots.txt Agentmap 중 하나. 링크로 알린 주소는 요청하지 않음".into()),
+    );
+    let legacy = wk.ai_catalog.exists || r.ai_catalog_link.is_some() || header_rel("ai-catalog");
+    o.push(
+        "geo.ai_catalog_legacy",
+        Geo,
+        "ARD 이전 위치 (ai-catalog)",
+        Presence::from_bool(legacy),
+        Some(json!({ "wellKnown": file_value(&wk.ai_catalog), "htmlLink": r.ai_catalog_link })),
+        Some("/.well-known/ai-catalog.json 또는 rel=\"ai-catalog\". ARD 소비자는 이 위치를 확인하지 않아도 된다".into()),
+    );
+    o.push(
+        "geo.webmcp_forms",
+        Geo,
+        "WebMCP 선언형 주석이 있는 폼 (toolname)",
+        count_presence(r.webmcp_forms, r.all_forms),
+        Some(json!({ "forms": r.all_forms, "annotated": r.webmcp_forms, "described": r.webmcp_forms_described })),
+        None,
+    );
+    o.push(
+        "geo.webmcp_script",
+        Geo,
+        "WebMCP 명령형 API 사용 흔적 (navigator.modelContext)",
+        Presence::from_bool(r.webmcp_script),
+        None,
+        Some("인라인 스크립트 기준. 외부 스크립트에서 등록한 도구는 알 수 없음".into()),
+    );
+    let csp = header(&i.page.headers, "content-security-policy").unwrap_or_default();
+    o.push(
+        "security.trusted_types",
+        Security,
+        "Trusted Types (CSP require-trusted-types-for)",
+        Presence::from_bool(
+            csp.to_ascii_lowercase()
+                .contains("require-trusted-types-for"),
+        ),
+        None,
+        None,
+    );
+}
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -4177,6 +4267,8 @@ mod tests {
                     apple_app_site_association: failed("aa"),
                     assetlinks: failed("al"),
                     ads_txt: failed("ads"),
+                    ard: failed("ard"),
+                    ai_catalog: failed("aic"),
                 },
                 sitemap_detail: SitemapDetail::default(),
                 site: Some(SiteSample {
@@ -4703,5 +4795,67 @@ mod tests {
             get(&c, "indexing.snippet_controls").presence,
             Presence::Missing
         );
+    }
+
+    #[test]
+    fn agent_discovery_items() {
+        let mut fx = Fx::failing();
+        // 요청 실패 + 알림 없음 → 판별 불가
+        let c = fx.run();
+        assert_eq!(get(&c, "geo.ard_manifest").presence, Presence::Unknown);
+        assert_eq!(get(&c, "geo.ai_catalog_legacy").presence, Presence::Missing);
+        assert_eq!(
+            get(&c, "geo.webmcp_forms").presence,
+            Presence::NotApplicable
+        );
+
+        // robots.txt Agentmap
+        fx.robots = found(
+            "https://a.com/robots.txt",
+            "User-agent: *\nAgentmap: https://a.com/ard.json\n",
+        );
+        let c = fx.run();
+        let v = get(&c, "geo.ard_manifest");
+        assert_eq!(v.presence, Presence::Present);
+        assert!(
+            v.value
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("https://a.com/ard.json")
+        );
+
+        // Link 헤더 rel=ard, well-known 파일, ai-catalog, Trusted Types
+        fx.robots = found("https://a.com/robots.txt", "User-agent: *\n");
+        fx.page.headers.insert(
+            "link",
+            r#"</style.css>; rel=preload, </.well-known/ard.json>; rel="ard""#
+                .parse()
+                .unwrap(),
+        );
+        fx.page.headers.insert(
+            "content-security-policy",
+            "require-trusted-types-for 'script'".parse().unwrap(),
+        );
+        fx.well_known.ai_catalog = found("https://a.com/.well-known/ai-catalog.json", "{}");
+        let html = r#"<html><body><form toolname="q"></form><form></form></body></html>"#;
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let c = fx.run();
+        assert_eq!(get(&c, "geo.ard_manifest").presence, Presence::Present);
+        assert_eq!(get(&c, "geo.ai_catalog_legacy").presence, Presence::Present);
+        assert_eq!(get(&c, "geo.webmcp_forms").presence, Presence::Present);
+        assert_eq!(
+            get(&c, "security.trusted_types").presence,
+            Presence::Present
+        );
+
+        // 아무 알림도 없고 파일도 없음
+        fx.page
+            .headers
+            .insert("link", "</a.css>; rel=preload".parse().unwrap());
+        fx.well_known.ard = found("https://a.com/.well-known/ard.json", "{}");
+        fx.well_known.ard.exists = false;
+        let c = fx.run();
+        assert_eq!(get(&c, "geo.ard_manifest").presence, Presence::Missing);
     }
 }

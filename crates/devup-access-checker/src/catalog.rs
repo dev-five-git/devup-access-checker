@@ -951,6 +951,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "rel=noopener 없는 새 창 링크",
     ),
     (
+        "security.trusted_types",
+        Security,
+        "Trusted Types (CSP require-trusted-types-for)",
+    ),
+    (
         "performance.static_asset_cache",
         Performance,
         "정적 리소스 Cache-Control",
@@ -986,6 +991,22 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
     ("geo.lists", Geo, "목록 (항목 2개 이상 ul/ol, dl)"),
     ("geo.tables", Geo, "표"),
     ("geo.noscript_content", Geo, "noscript 대체 콘텐츠"),
+    (
+        "geo.ard_manifest",
+        Geo,
+        "ARD 매니페스트 (AI 에이전트용 리소스 목록)",
+    ),
+    ("geo.ai_catalog_legacy", Geo, "ARD 이전 위치 (ai-catalog)"),
+    (
+        "geo.webmcp_forms",
+        Geo,
+        "WebMCP 선언형 주석이 있는 폼 (toolname)",
+    ),
+    (
+        "geo.webmcp_script",
+        Geo,
+        "WebMCP 명령형 API 사용 흔적 (navigator.modelContext)",
+    ),
     (
         "structured_data.speakable",
         StructuredData,

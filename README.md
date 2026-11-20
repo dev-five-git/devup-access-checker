@@ -389,6 +389,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `security.sri_missing` | SRI(integrity) 없는 외부 스크립트·스타일시트 |
 | `security.insecure_form_action` | https 페이지에서 http 로 보내는 폼 |
 | `security.target_blank_noopener` | rel=noopener 없는 새 창 링크 |
+| `security.trusted_types` | Trusted Types (CSP require-trusted-types-for) |
 | `performance.static_asset_cache` | 정적 리소스 Cache-Control |
 | `performance.dom_size` | DOM 크기 |
 | `performance.third_party_scripts` | 서드파티 스크립트 호스트 |
@@ -401,6 +402,10 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `geo.lists` | 목록 (항목 2개 이상 ul/ol, dl) |
 | `geo.tables` | 표 |
 | `geo.noscript_content` | noscript 대체 콘텐츠 |
+| `geo.ard_manifest` | ARD 매니페스트 (AI 에이전트용 리소스 목록) |
+| `geo.ai_catalog_legacy` | ARD 이전 위치 (ai-catalog) |
+| `geo.webmcp_forms` | WebMCP 선언형 주석이 있는 폼 (toolname) |
+| `geo.webmcp_script` | WebMCP 명령형 API 사용 흔적 (navigator.modelContext) |
 | `structured_data.speakable` | speakable 속성 |
 | `meta.canonical_target_noindex` | canonical 대상 페이지 noindex |
 | `meta.canonical_target_mismatch` | canonical 대상이 2xx 아님 또는 다른 canonical |
