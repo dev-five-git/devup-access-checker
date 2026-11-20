@@ -31,6 +31,12 @@ pub struct Robots {
     pub licenses: Vec<String>,
     /// 첫 `User-agent` 앞에 있어 어느 그룹에도 속하지 않는 Allow/Disallow 수
     pub orphan_rules: usize,
+    /// 규칙 형식 오류 (경로가 `/`·`*` 로 시작하지 않음, 1024자 초과, 비ASCII, 절대 URL 이 아닌 Sitemap)
+    pub rule_errors: Vec<String>,
+    /// Google 이 지원하지 않는 지시자 줄 (noindex·host·request-rate·visit-time)
+    pub unsupported: Vec<String>,
+    /// Yandex `Clean-param` 값
+    pub clean_params: Vec<String>,
 }
 
 impl Robots {
@@ -54,15 +60,42 @@ impl Robots {
                     if !last_was_agent && let Some(g) = current.take() {
                         robots.groups.push(g);
                     }
+                    // Google: 제품 토큰 뒤의 텍스트(`Googlebot/2.1`)는 무시한다
+                    let token = if value.starts_with('*') {
+                        "*".to_string()
+                    } else {
+                        value
+                            .split(['/', ' ', '*'])
+                            .next()
+                            .unwrap_or_default()
+                            .to_ascii_lowercase()
+                    };
                     current
                         .get_or_insert_with(Group::default)
                         .agents
-                        .push(value.to_ascii_lowercase());
+                        .push(token);
                     last_was_agent = true;
                 }
                 "allow" | "disallow" => {
                     last_was_agent = false;
                     robots.orphan_rules += usize::from(current.is_none());
+                    if !value.is_empty() {
+                        let problem = if !(value.starts_with('/') || value.starts_with('*')) {
+                            Some("경로가 / 로 시작하지 않음")
+                        } else if value.len() > 1024 {
+                            Some("1024자 초과")
+                        } else if !value.is_ascii() {
+                            Some("비ASCII 문자 (퍼센트 인코딩 필요)")
+                        } else {
+                            None
+                        };
+                        if let Some(p) = problem {
+                            robots.rule_errors.push(format!(
+                                "{p}: {}",
+                                line.chars().take(120).collect::<String>()
+                            ));
+                        }
+                    }
                     if let Some(g) = current.as_mut()
                         && !value.is_empty()
                     {
@@ -76,10 +109,15 @@ impl Robots {
                     // RFC 상 그룹과 무관한 전역 지시자. `Sitemap: https://...` 의 콜론 이후 전체를 사용.
                     if !value.is_empty() {
                         robots.sitemaps.push(value.to_string());
+                        let lower = value.to_ascii_lowercase();
+                        if !(lower.starts_with("http://") || lower.starts_with("https://")) {
+                            robots
+                                .rule_errors
+                                .push(format!("Sitemap 이 절대 URL 이 아님: {value}"));
+                        }
                     }
                 }
                 "crawl-delay" => {
-                    last_was_agent = false;
                     let agents = current
                         .as_ref()
                         .map(|g| g.agents.join(","))
@@ -87,7 +125,6 @@ impl Robots {
                     robots.crawl_delays.push((agents, value.to_string()));
                 }
                 "content-signal" | "content-usage" => {
-                    last_was_agent = false;
                     let agents = current
                         .as_ref()
                         .map(|g| g.agents.join(","))
@@ -104,9 +141,10 @@ impl Robots {
                         robots.licenses.push(value.to_string());
                     }
                 }
-                // 표준 외이지만 널리 쓰이는 지시자
-                "host" | "clean-param" | "noindex" | "request-rate" | "visit-time" => {
-                    last_was_agent = false
+                "clean-param" => robots.clean_params.push(value.to_string()),
+                // 표준 외 지시자 (Google 은 무시)
+                "host" | "noindex" | "request-rate" | "visit-time" => {
+                    robots.unsupported.push(line.to_string())
                 }
                 _ => {
                     last_was_agent = false;
@@ -134,6 +172,16 @@ impl Robots {
             .iter()
             .filter(|g| g.agents.contains(&token))
             .collect();
+        // 가장 구체적인 그룹: googlebot-image 는 googlebot 그룹을 따른다 (Google)
+        if selected.is_empty()
+            && let Some((family, _)) = token.split_once('-')
+        {
+            selected = self
+                .groups
+                .iter()
+                .filter(|g| g.agents.iter().any(|a| a == family))
+                .collect();
+        }
         // Applebot 은 자기 그룹이 없으면 Googlebot 규칙을 따른다 (Apple 문서)
         if selected.is_empty() && token == "applebot" {
             selected = self
@@ -306,5 +354,30 @@ Sitemap: https://example.com/sitemap.xml # main
         assert!(r.is_allowed("Applebot", "/g"));
         let r = Robots::parse("User-agent: *\nDisallow: /\n");
         assert!(!r.is_allowed("Applebot", "/"));
+    }
+
+    #[test]
+    fn google_parsing_rules() {
+        let r = Robots::parse(
+            "User-agent: Googlebot/2.1 (+http://www.google.com/bot.html)\nCrawl-delay: 5\nUser-agent: Daum\nDisallow: /private\n\
+             Disallow: private2\nAllow: /한글\nDisallow: /xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx\nSitemap: /sitemap.xml\nHost: a.com\nNoindex: /x\n\
+             Clean-param: ref /some_dir/\nUser-agent: *star\nAllow: /\n",
+        );
+        assert!(
+            !r.is_allowed("Googlebot", "/private"),
+            "Crawl-delay 는 그룹을 끊지 않는다"
+        );
+        assert!(!r.is_allowed("daum", "/private"));
+        assert!(
+            !r.is_allowed("Googlebot-Image", "/private"),
+            "googlebot 그룹을 따른다"
+        );
+        assert!(
+            r.is_allowed("Mistral-AI", "/private"),
+            "그룹 없는 계열은 * 로"
+        );
+        assert_eq!(r.rule_errors.len(), 4, "{:?}", r.rule_errors);
+        assert_eq!(r.unsupported, ["Host: a.com", "Noindex: /x"]);
+        assert_eq!(r.clean_params, ["ref /some_dir/"]);
     }
 }

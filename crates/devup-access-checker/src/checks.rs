@@ -19,7 +19,9 @@ pub const SEARCH_CRAWLERS: &[(&str, &str, &str)] = &[
     ("googlebot", "Googlebot", "Google"),
     ("bingbot", "Bingbot", "Bing"),
     ("yeti", "Yeti", "Naver"),
-    ("daumoa", "Daumoa", "Daum"),
+    ("daum", "Daum", "Daum"),
+    ("googlebot_image", "Googlebot-Image", "Google 이미지"),
+    ("yandex", "Yandex", "Yandex"),
     ("applebot", "Applebot", "Apple 검색(Siri·Spotlight)"),
 ];
 
@@ -75,10 +77,19 @@ pub const SEARCH_USER_AGENTS: &[(&str, &str)] = &[
         "bingbot",
         "Mozilla/5.0 (compatible; bingbot/2.0; +http://www.bing.com/bingbot.htm)",
     ),
+    (
+        "applebot",
+        "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/17.4 Safari/605.1.15 (Applebot/0.1; +http://www.apple.com/go/applebot)",
+    ),
+    (
+        "daum",
+        "Mozilla/5.0 (compatible; Daum/4.1; +https://cs.daum.net/faq/service/15/category/4118/detail/28966)",
+    ),
 ];
 
 /// 실제 User-Agent 로 페이지를 요청해 볼 AI 크롤러: (id 접미사, UA 문자열)
 pub const AI_USER_AGENTS: &[(&str, &str)] = &[
+    ("ccbot", "CCBot/2.0 (https://commoncrawl.org/faq/)"),
     (
         "gptbot",
         "Mozilla/5.0 AppleWebKit/537.36 (KHTML, like Gecko); compatible; GPTBot/1.2; +https://openai.com/gptbot",
@@ -250,6 +261,8 @@ pub struct SearchProbes {
     pub change_password: Option<Result<Vec<Hop>, String>>,
     /// `/.well-known/gpc.json`. None = 수행 안 함
     pub gpc: Option<FileProbe>,
+    /// ETag·Last-Modified 조건부 요청 상태. None = 두 헤더가 없음
+    pub conditional: Option<Result<u16, String>>,
     /// 첫 RSS/Atom 피드 본문. None = 피드 링크 없음 또는 수행 안 함
     pub feed: Option<FileProbe>,
     /// `/BingSiteAuth.xml`. None = 수행 안 함
@@ -1172,7 +1185,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
         Ok(Robots::parse(i.robots.body.as_deref().unwrap_or_default()))
     } else if let Some(e) = &i.robots.error {
         Err(format!("robots.txt 요청 실패: {e}"))
-    } else if i.robots.status_code.is_some_and(|s| s >= 500) {
+    } else if i.robots.status_code.is_some_and(|s| s >= 500 || s == 429) {
         Err(format!(
             "robots.txt HTTP {}",
             i.robots.status_code.unwrap_or_default()
@@ -1544,6 +1557,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     search_network_checks(&mut o, i, &robots);
     geo_spec_checks(&mut o, i, &robots);
     security_spec_checks(&mut o, i);
+    google_spec_checks(&mut o, i, &robots);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -2998,6 +3012,94 @@ fn more_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
                 Some("sitemaps.org 프로토콜".into()),
             );
         }
+        let date_unix = |d: &str| {
+            let d = d.trim();
+            crate::sec::rfc3339_to_unix(d).or_else(|| {
+                (d.len() == 10)
+                    .then(|| crate::sec::rfc3339_to_unix(&format!("{d}T00:00:00Z")))
+                    .flatten()
+            })
+        };
+        let future: Vec<&String> = issues
+            .lastmods
+            .iter()
+            .filter(|d| date_unix(d).is_some_and(|t| t > i.extended.now + 86_400))
+            .take(20)
+            .collect();
+        o.push(
+            "crawling.sitemap_future_lastmod",
+            Crawling,
+            "sitemap 미래 lastmod",
+            Presence::from_bool(!future.is_empty()),
+            (!future.is_empty()).then(|| json!(future)),
+            None,
+        );
+        o.push(
+            "crawling.sitemap_invalid_xml",
+            Crawling,
+            "sitemap 구조 오류 (루트·loc 없는 url·중첩 index)",
+            Presence::from_bool(!issues.structure_errors.is_empty()),
+            (!issues.structure_errors.is_empty()).then(|| json!(issues.structure_errors)),
+            None,
+        );
+        let [img, video, news, xhtml] = issues.extensions;
+        o.push(
+            "crawling.sitemap_extensions",
+            Crawling,
+            "sitemap 확장 (image·video·news·hreflang)",
+            Presence::from_bool(img + video + news + xhtml > 0),
+            Some(json!({ "image": img, "video": video, "news": news, "hreflang": xhtml })),
+            None,
+        );
+        o.push(
+            "crawling.sitemap_extension_errors",
+            Crawling,
+            "sitemap 확장 태그 오류",
+            if img + video + news > 0 {
+                Presence::from_bool(!issues.extension_errors.is_empty())
+            } else {
+                Presence::NotApplicable
+            },
+            (!issues.extension_errors.is_empty()).then(|| json!(issues.extension_errors)),
+            Some("Google 이미지·동영상·뉴스 sitemap 필수 태그·개수".into()),
+        );
+        let stale: Vec<&String> = issues
+            .news_dates
+            .iter()
+            .filter(|d| date_unix(d).is_some_and(|t| t < i.extended.now - 2 * 86_400))
+            .take(20)
+            .collect();
+        o.push(
+            "crawling.sitemap_news_stale",
+            Crawling,
+            "news sitemap 의 2일 지난 기사",
+            if issues.news_dates.is_empty() {
+                Presence::NotApplicable
+            } else {
+                Presence::from_bool(!stale.is_empty())
+            },
+            (!stale.is_empty()).then(|| json!(stale)),
+            None,
+        );
+        let blocked: Vec<&str> = match robots {
+            Ok(r) => ["Googlebot", "Yeti", "Bingbot"]
+                .into_iter()
+                .filter(|b| !r.is_allowed(b, sm_url.path()))
+                .collect(),
+            Err(_) => Vec::new(),
+        };
+        o.push(
+            "crawling.sitemap_blocked_by_robots",
+            Crawling,
+            "robots.txt 가 sitemap 파일을 차단",
+            if robots.is_ok() {
+                Presence::from_bool(!blocked.is_empty())
+            } else {
+                Presence::Unknown
+            },
+            (!blocked.is_empty()).then(|| json!(blocked)),
+            None,
+        );
         o.push(
             "crawling.sitemap_namespace",
             Crawling,
@@ -5772,7 +5874,7 @@ fn geo_spec_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
         parsed.map(|r| json!(r.orphan_rules)),
         Some("RFC 9309 §2.2.2: User-agent 앞의 규칙은 무시됨".into()),
     );
-    let unreachable = rb.error.is_some() || rb.status_code.is_some_and(|c| c >= 500);
+    let unreachable = rb.error.is_some() || rb.status_code.is_some_and(|c| c >= 500 || c == 429);
     o.push(
         "crawling.robots_unreachable",
         Crawling,
@@ -6675,6 +6777,690 @@ fn security_spec_checks(o: &mut Out, i: &Inputs) {
         p,
         None,
         n,
+    );
+}
+
+/// JSON-LD 전체에서 @type 이 `ty` 인 객체.
+fn ld_objects_of<'a>(v: &'a Value, ty: &str, out: &mut Vec<&'a serde_json::Map<String, Value>>) {
+    if let Value::Object(m) = v {
+        let is = match m.get("@type") {
+            Some(Value::String(t)) => t == ty,
+            Some(Value::Array(ts)) => ts.iter().any(|t| t.as_str() == Some(ty)),
+            _ => false,
+        };
+        if is {
+            out.push(m);
+        }
+    }
+    match v {
+        Value::Array(a) => a.iter().for_each(|x| ld_objects_of(x, ty, out)),
+        Value::Object(m) => m.values().for_each(|x| ld_objects_of(x, ty, out)),
+        _ => {}
+    }
+}
+
+/// `YYYY-MM-DD` 또는 RFC 3339 날짜를 UNIX 초로.
+fn date_to_unix(d: &str) -> Option<i64> {
+    let d = d.trim();
+    crate::sec::rfc3339_to_unix(d).or_else(|| {
+        d.get(..10)
+            .and_then(|x| crate::sec::rfc3339_to_unix(&format!("{x}T00:00:00Z")))
+    })
+}
+
+/// Google 검색 센터·Yandex·Daum·Apple 문서 대조 항목.
+fn google_spec_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
+    use Category::*;
+    let f = i.facts;
+    let g = &f.google;
+    let h = &i.page.headers;
+    let base = &i.page.final_url;
+    let link_base = f.link_base(base);
+    let now = i.extended.now;
+    let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
+    let flag = |b: bool, applicable: bool| {
+        if applicable {
+            Presence::from_bool(b)
+        } else {
+            Presence::NotApplicable
+        }
+    };
+
+    // ===== robots.txt =====
+    let parsed = robots.as_ref().ok().filter(|_| i.robots.exists);
+    let na_robots = |pick: fn(&Robots) -> &Vec<String>| match (robots, parsed) {
+        (Err(_), _) => (Presence::Unknown, None),
+        (_, None) => (Presence::NotApplicable, None),
+        (_, Some(r)) => (Presence::from_bool(!pick(r).is_empty()), list(pick(r))),
+    };
+    for (id, label, pick) in [
+        (
+            "crawling.robots_rule_errors",
+            "robots.txt 규칙 형식 오류",
+            (|r| &r.rule_errors) as fn(&Robots) -> &Vec<String>,
+        ),
+        (
+            "crawling.robots_unsupported_directives",
+            "robots.txt 미지원 지시자 (noindex·host 등)",
+            |r| &r.unsupported,
+        ),
+        (
+            "crawling.robots_clean_param",
+            "robots.txt Clean-param (Yandex)",
+            |r| &r.clean_params,
+        ),
+    ] {
+        let (p, v) = na_robots(pick);
+        o.push(id, Crawling, label, p, v, None);
+    }
+    let mut fav_paths = vec!["/favicon.ico".to_string()];
+    for (_, href) in &f.search.favicons {
+        if let Ok(u) = link_base.join(href)
+            && u.host_str() == base.host_str()
+        {
+            fav_paths.push(u.path().to_string());
+        }
+    }
+    let fav_blocked: Option<Vec<&String>> = robots.as_ref().ok().map(|r| {
+        fav_paths
+            .iter()
+            .filter(|p| !r.is_allowed("Googlebot-Image", p))
+            .collect()
+    });
+    o.push(
+        "crawling.robots_blocks_favicon_googlebot",
+        Crawling,
+        "robots.txt 가 favicon 차단 (Googlebot-Image)",
+        fav_blocked
+            .as_ref()
+            .map_or(Presence::Unknown, |b| Presence::from_bool(!b.is_empty())),
+        fav_blocked.filter(|b| !b.is_empty()).map(|b| json!(b)),
+        Some("Google 검색 파비콘 요건".into()),
+    );
+
+    // ===== canonical =====
+    let header_canonical = link_header_targets(h, "canonical", None);
+    o.push(
+        "meta.canonical_header",
+        Meta,
+        "canonical HTTP 헤더 (Link rel=canonical)",
+        Presence::from_bool(!header_canonical.is_empty()),
+        list(&header_canonical),
+        None,
+    );
+    let html_canon = f
+        .canonical
+        .as_deref()
+        .and_then(|c| link_base.join(c).ok())
+        .map(|mut u| {
+            u.set_fragment(None);
+            u
+        });
+    let header_canon = header_canonical.first().and_then(|c| base.join(c).ok());
+    o.push(
+        "meta.canonical_conflict",
+        Meta,
+        "canonical 지정 방식 간 불일치 (HTML·헤더)",
+        match (&html_canon, &header_canon) {
+            (Some(a), Some(b)) => Presence::from_bool(a != b),
+            _ => Presence::NotApplicable,
+        },
+        None,
+        None,
+    );
+    let raw_canon = f.search.canonical_raw.as_deref();
+    o.push(
+        "meta.canonical_fragment",
+        Meta,
+        "canonical 에 # 프래그먼트",
+        raw_canon.map_or(Presence::NotApplicable, |c| {
+            Presence::from_bool(c.contains('#'))
+        }),
+        None,
+        None,
+    );
+    let page_param = base
+        .query_pairs()
+        .find(|(k, _)| matches!(k.as_ref(), "page" | "p" | "pg"))
+        .and_then(|(_, v)| v.parse::<u32>().ok());
+    let paginated = page_param.is_some_and(|n| n >= 2) || g.rel_prev;
+    o.push(
+        "meta.paginated_canonical_to_first",
+        Meta,
+        "페이지네이션 2쪽 이상의 canonical 이 1쪽",
+        match (&html_canon, paginated) {
+            (Some(c), true) => {
+                let mut first = base.clone();
+                let rest: Vec<(String, String)> = base
+                    .query_pairs()
+                    .filter(|(k, _)| !matches!(k.as_ref(), "page" | "p" | "pg"))
+                    .map(|(k, v)| (k.into_owned(), v.into_owned()))
+                    .collect();
+                first.set_query(None);
+                if !rest.is_empty() {
+                    first.query_pairs_mut().extend_pairs(rest);
+                }
+                Presence::from_bool(c != base && same_url(c, &first))
+            }
+            _ => Presence::NotApplicable,
+        },
+        None,
+        Some("Google: 페이지네이션의 첫 페이지를 canonical 로 쓰지 말 것".into()),
+    );
+
+    // ===== hreflang =====
+    let mut bad: Vec<String> = Vec::new();
+    for l in &g.hreflang {
+        if !crate::google::hreflang_valid(&l.lang) {
+            bad.push(format!("코드 오류: {}", l.lang));
+        }
+        if !is_absolute_http(&l.href) {
+            bad.push(format!("절대 URL 아님: {}", l.href));
+        }
+        if l.media {
+            bad.push(format!("media 와 함께 사용: {}", l.lang));
+        }
+        if g.hreflang
+            .iter()
+            .any(|o2| o2.lang.eq_ignore_ascii_case(&l.lang) && o2.href != l.href)
+        {
+            bad.push(format!("같은 코드에 다른 URL: {}", l.lang));
+        }
+    }
+    bad.dedup();
+    o.push(
+        "structured_data.hreflang_invalid",
+        StructuredData,
+        "잘못된 hreflang (코드·URL·media·중복)",
+        flag(!bad.is_empty(), !g.hreflang.is_empty()),
+        list(&bad),
+        None,
+    );
+    let header_hreflang: Vec<String> = header(h, "link")
+        .unwrap_or_default()
+        .split(',')
+        .filter(|p| p.to_ascii_lowercase().contains("hreflang="))
+        .map(|p| p.trim().to_string())
+        .collect();
+    let sitemap_hreflang = pick_sitemap(i.sitemap, &i.sitemap_detail.declared)
+        .and_then(|sm| sm.body.as_deref())
+        .is_some_and(|b| b.contains("<xhtml:link"));
+    o.push(
+        "structured_data.hreflang_other_sources",
+        StructuredData,
+        "hreflang (HTTP 헤더·sitemap)",
+        Presence::from_bool(!header_hreflang.is_empty() || sitemap_hreflang),
+        Some(json!({ "header": header_hreflang, "sitemap": sitemap_hreflang })),
+        None,
+    );
+    let lang = f
+        .lang
+        .as_deref()
+        .map(|l| l.split('-').next().unwrap_or_default().to_ascii_lowercase());
+    o.push(
+        "structured_data.hreflang_canonical_conflict",
+        StructuredData,
+        "canonical 이 다른 언어 버전을 가리킴",
+        match (&html_canon, &lang, g.hreflang.is_empty()) {
+            (Some(c), Some(lang), false) => Presence::from_bool(
+                c != base
+                    && g.hreflang.iter().any(|l| {
+                        link_base.join(&l.href).is_ok_and(|u| same_url(&u, c))
+                            && !l.lang.to_ascii_lowercase().starts_with(lang.as_str())
+                            && !l.lang.eq_ignore_ascii_case("x-default")
+                    }),
+            ),
+            _ => Presence::NotApplicable,
+        },
+        None,
+        None,
+    );
+
+    // ===== 크롤링·전송 =====
+    let big: Vec<String> = std::iter::once((base.to_string(), i.page.body_bytes as u64))
+        .chain(
+            i.extended
+                .page_weight
+                .iter()
+                .flat_map(|w| w.large_scripts.iter().cloned()),
+        )
+        .filter(|(_, n)| *n > 2 * 1024 * 1024)
+        .map(|(u, n)| format!("{u} ({n} bytes)"))
+        .collect();
+    o.push(
+        "crawling.over_googlebot_size_limit",
+        Crawling,
+        "Googlebot 2MB 초과 (HTML·JS)",
+        Presence::from_bool(!big.is_empty()),
+        list(&big),
+        Some("Googlebot 은 리소스마다 압축 해제 기준 앞 2MB 만 처리".into()),
+    );
+    let (p, v) = match &i.extended.search.conditional {
+        None => (Presence::NotApplicable, None),
+        Some(Err(e)) => (Presence::Unknown, Some(json!(e))),
+        Some(Ok(code)) => (Presence::from_bool(*code == 304), Some(json!(code))),
+    };
+    o.push(
+        "crawling.conditional_request_304",
+        Crawling,
+        "조건부 요청 304 지원",
+        p,
+        v,
+        None,
+    );
+    let host = base.host_str().unwrap_or_default();
+    let mismatched: Vec<String> = i
+        .ai_ua
+        .iter()
+        .filter_map(|(id, r)| {
+            r.as_ref()
+                .ok()
+                .filter(|p| p.1.host_str() != Some(host))
+                .map(|p| format!("{id}: {}", p.1))
+        })
+        .collect();
+    o.push(
+        "transport.ua_redirect_mismatch",
+        Transport,
+        "UA 별 다른 최종 호스트 (교묘한 리다이렉트 의심)",
+        flag(
+            !mismatched.is_empty(),
+            i.ai_ua.iter().any(|(_, r)| r.is_ok()),
+        ),
+        list(&mismatched),
+        Some("Google 스팸 정책: 사용자와 크롤러를 다른 곳으로 보내는 리다이렉트".into()),
+    );
+
+    // ===== 색인 지시어 =====
+    let segments: Vec<String> = [
+        f.meta("robots"),
+        f.meta("googlebot"),
+        f.meta("bingbot"),
+        f.meta("yandex"),
+        f.meta("applebot"),
+    ]
+    .into_iter()
+    .flatten()
+    .map(str::to_string)
+    .chain(header_values(h, "x-robots-tag"))
+    .flat_map(|v| {
+        v.split(',')
+            .map(|d| d.trim().to_ascii_lowercase())
+            .collect::<Vec<_>>()
+    })
+    .filter(|d| !d.is_empty())
+    .collect();
+    let rule_name = |d: &str| -> String {
+        // "googlebot: noindex" 처럼 앞에 크롤러 이름이 붙은 경우는 뒤를 본다
+        let d = match d.split_once(':') {
+            Some((ua, rest)) if !crate::google::KNOWN_ROBOTS.contains(&ua.trim()) => rest.trim(),
+            _ => d,
+        };
+        d.split([':', ' ']).next().unwrap_or_default().to_string()
+    };
+    let unknown: Vec<String> = segments
+        .iter()
+        .filter(|d| !crate::google::KNOWN_ROBOTS.contains(&rule_name(d).as_str()))
+        .cloned()
+        .collect();
+    o.push(
+        "indexing.robots_unknown_directives",
+        Indexing,
+        "알 수 없는 robots 지시어",
+        flag(!unknown.is_empty(), !segments.is_empty()),
+        list(&unknown),
+        Some(
+            "Google robots-tags 목록과 네이버·Bing·Yandex 알려진 값 기준 (no-index 같은 오타 검출)"
+                .into(),
+        ),
+    );
+    let after = segments
+        .iter()
+        .find(|d| rule_name(d) == "unavailable_after")
+        .map(|d| {
+            d.split_once("unavailable_after:")
+                .map_or("", |(_, x)| x)
+                .trim()
+                .to_string()
+        });
+    o.push(
+        "indexing.unavailable_after_passed",
+        Indexing,
+        "unavailable_after 날짜 지남",
+        match after.as_deref().map(date_to_unix) {
+            None => Presence::NotApplicable,
+            Some(None) => Presence::Unknown,
+            Some(Some(t)) => Presence::from_bool(t < now),
+        },
+        after.map(Value::from),
+        None,
+    );
+    let has = |n: &str| segments.iter().any(|d| rule_name(d) == n);
+    o.push(
+        "indexing.robots_conflicting_directives",
+        Indexing,
+        "상충하는 robots 지시어 (index+noindex 등)",
+        flag(
+            ((has("index") || has("all")) && (has("noindex") || has("none")))
+                || (has("follow") && (has("nofollow") || has("none")))
+                || (has("max-snippet") && has("nosnippet")),
+            !segments.is_empty(),
+        ),
+        None,
+        Some("Google 은 더 제한적인 규칙, Yandex 는 허용 규칙을 따른다".into()),
+    );
+    o.push(
+        "indexing.data_nosnippet_invalid_element",
+        Indexing,
+        "span·div·section 외 요소의 data-nosnippet",
+        Presence::from_bool(!g.data_nosnippet_invalid.is_empty()),
+        list(&g.data_nosnippet_invalid),
+        None,
+    );
+    for (id, ua, label) in [
+        (
+            "indexing.applebot_meta",
+            "applebot",
+            "Apple 전용 robots 지시 (meta applebot·X-Robots-Tag applebot:)",
+        ),
+        (
+            "indexing.yandex_meta",
+            "yandex",
+            "Yandex 전용 robots 지시 (meta yandex·X-Robots-Tag yandex:)",
+        ),
+    ] {
+        let mut v: Vec<String> = f.meta(ua).map(str::to_string).into_iter().collect();
+        v.extend(
+            header_values(h, "x-robots-tag")
+                .iter()
+                .flat_map(|x| x.split(','))
+                .filter_map(|seg| {
+                    seg.trim()
+                        .split_once(':')
+                        .filter(|(u, _)| u.trim().eq_ignore_ascii_case(ua))
+                        .map(|(_, d)| d.trim().to_string())
+                }),
+        );
+        o.push(
+            id,
+            Indexing,
+            label,
+            Presence::from_bool(!v.is_empty()),
+            list(&v),
+            None,
+        );
+    }
+    o.push(
+        "indexing.yandex_noindex_tag",
+        Indexing,
+        "Yandex <noindex> 태그",
+        Presence::from_bool(g.yandex_noindex_open > 0),
+        (g.yandex_noindex_open > 0).then(|| {
+            json!({ "open": g.yandex_noindex_open, "close": g.yandex_noindex_close, "unclosed": g.yandex_noindex_open > g.yandex_noindex_close })
+        }),
+        Some("닫는 태그가 없으면 Yandex 는 페이지 전체를 숨긴 것으로 본다".into()),
+    );
+    o.opt(
+        "indexing.google_meta",
+        Indexing,
+        "meta name=google (notranslate 등)",
+        f.meta("google"),
+    );
+    o.opt(
+        "meta.rating",
+        Meta,
+        "SafeSearch 성인 표시 (meta rating)",
+        f.meta("rating"),
+    );
+    o.opt(
+        "meta.yandex_site_verification",
+        Meta,
+        "Yandex 웹마스터 인증",
+        f.meta("yandex-verification"),
+    );
+
+    // ===== 파비콘·제목·이미지·날짜 =====
+    let (p, v) = match &i.extended.favicon_image {
+        None => (Presence::NotApplicable, None),
+        Some(Err(e)) => (Presence::Unknown, Some(json!(e))),
+        Some(Ok(img)) => {
+            let ct = img
+                .content_type
+                .as_deref()
+                .unwrap_or_default()
+                .to_ascii_lowercase();
+            let format_ok = [
+                "bmp", "gif", "icon", "ico", "png", "jpeg", "jpg", "ppm", "tiff", "svg",
+            ]
+            .iter()
+            .any(|t| ct.contains(t));
+            let ok = matches!((img.width, img.height), (Some(w), Some(hh)) if w == hh && w >= 8)
+                && format_ok;
+            (
+                Presence::from_bool(ok),
+                Some(
+                    json!({ "width": img.width, "height": img.height, "contentType": img.content_type }),
+                ),
+            )
+        }
+    };
+    o.push(
+        "meta.favicon_google_eligible",
+        Meta,
+        "Google 파비콘 요건 (정사각형·8px 이상·형식)",
+        p,
+        v,
+        Some("48px 이상 권장".into()),
+    );
+    const SEPARATORS: &[char] = &['|', '-', '–', '—', ':', '·'];
+    let title = f.title.as_deref().map(str::trim);
+    o.push(
+        "meta.title_half_empty",
+        Meta,
+        "반쪽 title (구분자로 시작·끝남)",
+        title.map_or(Presence::NotApplicable, |t| {
+            Presence::from_bool(t.starts_with(SEPARATORS) || t.ends_with(SEPARATORS))
+        }),
+        None,
+        Some("Google 제목 링크: 반쪽짜리 title".into()),
+    );
+    let title_script = title.and_then(crate::google::dominant_script);
+    o.push(
+        "meta.title_script_mismatch",
+        Meta,
+        "title 과 본문의 문자 체계 불일치",
+        match (title_script, g.body_script) {
+            (Some(a), Some(b)) => Presence::from_bool(a != b),
+            _ => Presence::NotApplicable,
+        },
+        Some(json!({ "title": title_script, "body": g.body_script })),
+        Some("가장 많이 쓴 문자 체계(한글·라틴 등) 비교 (휴리스틱)".into()),
+    );
+    o.push(
+        "content.img_missing_src",
+        Content,
+        "src 없는 이미지 (data-src 만·picture 에 img 없음)",
+        Presence::from_bool(g.img_missing_src > 0),
+        Some(json!(g.img_missing_src)),
+        Some("Google 이미지는 img 의 src 만 읽는다".into()),
+    );
+    o.push(
+        "content.img_unsupported_format",
+        Content,
+        "Google 이미지 미지원 형식",
+        Presence::from_bool(!g.img_unsupported.is_empty()),
+        list(&g.img_unsupported),
+        Some("BMP·GIF·JPEG·PNG·WebP·SVG·AVIF 외 확장자".into()),
+    );
+    let og_width = i
+        .extended
+        .og_image
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|img| img.width);
+    o.push(
+        "open_graph.image_under_1200",
+        OpenGraph,
+        "og:image 가로 1200px 미만 (Discover)",
+        og_width.map_or(Presence::NotApplicable, |w| Presence::from_bool(w < 1200)),
+        og_width.map(|w| json!(w)),
+        None,
+    );
+    let published = f.extra.published.as_deref().and_then(date_to_unix);
+    let modified = f.extra.modified.as_deref().and_then(date_to_unix);
+    let mut date_bad: Vec<&str> = Vec::new();
+    if published.is_some_and(|t| t > now + 86_400) {
+        date_bad.push("게시일이 미래");
+    }
+    if modified.is_some_and(|t| t > now + 86_400) {
+        date_bad.push("수정일이 미래");
+    }
+    if let (Some(p2), Some(m)) = (published, modified)
+        && m < p2
+    {
+        date_bad.push("수정일이 게시일보다 이름");
+    }
+    o.push(
+        "geo.future_dates",
+        Geo,
+        "미래·역전된 게시일·수정일",
+        flag(
+            !date_bad.is_empty(),
+            published.is_some() || modified.is_some(),
+        ),
+        (!date_bad.is_empty()).then(|| json!(date_bad)),
+        None,
+    );
+    let mut websites = Vec::new();
+    f.extra
+        .ld_roots
+        .iter()
+        .for_each(|r| ld_objects_of(r, "WebSite", &mut websites));
+    o.push(
+        "structured_data.website_duplicate",
+        StructuredData,
+        "WebSite 구조화 데이터 중복",
+        flag(websites.len() > 1, !websites.is_empty()),
+        Some(json!(websites.len())),
+        None,
+    );
+    let ws_name = websites
+        .first()
+        .and_then(|w| w.get("name"))
+        .and_then(Value::as_str)
+        .map(str::trim);
+    let og_site = f.meta("og:site_name").map(str::trim);
+    o.push(
+        "structured_data.site_name_mismatch",
+        StructuredData,
+        "WebSite.name 과 og:site_name 불일치",
+        match (ws_name, og_site) {
+            (Some(a), Some(b)) => Presence::from_bool(a != b),
+            _ => Presence::NotApplicable,
+        },
+        Some(json!({ "website": ws_name, "ogSiteName": og_site })),
+        None,
+    );
+    let free: Vec<Value> = f
+        .extra
+        .ld_objects
+        .iter()
+        .filter(|ob| ob.keys.iter().any(|k| k == "isAccessibleForFree"))
+        .map(|ob| json!(ob.types))
+        .collect();
+    o.push(
+        "structured_data.is_accessible_for_free",
+        StructuredData,
+        "isAccessibleForFree (유료 콘텐츠 표시)",
+        Presence::from_bool(!free.is_empty()),
+        (!free.is_empty()).then(|| json!(free)),
+        None,
+    );
+
+    // ===== 링크·콘텐츠 =====
+    o.push(
+        "content.hidden_text_styles",
+        Content,
+        "인라인 CSS 로 숨긴 텍스트·링크",
+        Presence::from_bool(!g.hidden_text.is_empty()),
+        list(&g.hidden_text),
+        Some("font-size:0·opacity:0·화면 밖 배치. 스크린리더용 숨김도 포함되므로 검토용".into()),
+    );
+    o.push(
+        "content.unencoded_link_urls",
+        Content,
+        "퍼센트 인코딩 안 된 링크 URL (공백·비ASCII)",
+        Presence::from_bool(!g.unencoded_links.is_empty()),
+        list(&g.unencoded_links),
+        None,
+    );
+    o.push(
+        "content.outbound_link_qualifiers",
+        Content,
+        "외부 링크 rel (sponsored·ugc·nofollow)",
+        flag(g.outbound_sponsored + g.outbound_ugc + g.outbound_nofollow > 0, g.outbound_total > 0),
+        Some(json!({ "total": g.outbound_total, "sponsored": g.outbound_sponsored, "ugc": g.outbound_ugc, "nofollow": g.outbound_nofollow })),
+        None,
+    );
+    o.push(
+        "content.underscore_url_paths",
+        Content,
+        "밑줄로 단어를 구분한 URL",
+        Presence::from_bool(!g.underscore_paths.is_empty()),
+        list(&g.underscore_paths),
+        Some("Google: 단어 구분에는 하이픈 권장".into()),
+    );
+    o.push(
+        "crawling.rel_next_prev",
+        Crawling,
+        "rel=next·prev",
+        Presence::from_bool(g.rel_next || g.rel_prev),
+        None,
+        Some("Google 은 쓰지 않지만 다른 검색엔진은 참고할 수 있음".into()),
+    );
+
+    // ===== Apple =====
+    let aasa = &i.well_known.apple_app_site_association;
+    let mut aasa_bad: Vec<&str> = Vec::new();
+    if aasa.exists {
+        if aasa.redirected || aasa.final_url.as_deref().is_some_and(|u| u != aasa.url) {
+            aasa_bad.push("리다이렉트됨");
+        }
+        if !aasa.url.starts_with("https://") {
+            aasa_bad.push("https 아님");
+        }
+        match serde_json::from_str::<Value>(aasa.body.as_deref().unwrap_or_default()) {
+            Ok(j)
+                if ["applinks", "webcredentials", "appclips"]
+                    .iter()
+                    .any(|k| j.get(k).is_some()) => {}
+            Ok(_) => aasa_bad.push("applinks·webcredentials·appclips 없음"),
+            Err(_) => aasa_bad.push("JSON 아님"),
+        }
+    }
+    o.push(
+        "meta.apple_app_site_association_valid",
+        Meta,
+        "AASA 파일 요건 위반",
+        flag(!aasa_bad.is_empty(), aasa.exists),
+        (!aasa_bad.is_empty()).then(|| json!(aasa_bad)),
+        None,
+    );
+    let itunes = f.meta("apple-itunes-app");
+    o.push(
+        "meta.apple_itunes_app_valid",
+        Meta,
+        "apple-itunes-app 형식 오류",
+        itunes.map_or(Presence::NotApplicable, |v| {
+            let id_ok = v.split(',').any(|p| {
+                p.trim()
+                    .strip_prefix("app-id=")
+                    .is_some_and(|n| !n.is_empty() && n.bytes().all(|b| b.is_ascii_digit()))
+            });
+            Presence::from_bool(!id_ok || g.itunes_meta_outside_head)
+        }),
+        itunes.map(Value::from),
+        None,
     );
 }
 
@@ -8121,6 +8907,7 @@ mod tests {
             robots_chain: None,
             change_password: None,
             gpc: None,
+            conditional: None,
             feed: Some(failed("https://a.com/feed")),
             bing_site_auth: Some(failed("https://a.com/BingSiteAuth.xml")),
             not_found_chain: Some(err()),
@@ -8171,6 +8958,7 @@ mod tests {
             robots_chain: None,
             change_password: None,
             gpc: None,
+            conditional: None,
             feed: Some(feed),
             bing_site_auth: Some(found("https://a.com/BingSiteAuth.xml", "<users></users>")),
             not_found_chain: Some(Ok(vec![
@@ -8755,5 +9543,253 @@ mod tests {
             Presence::NotApplicable
         );
         assert_eq!(p(&c, "trust.gpc"), Presence::NotApplicable);
+    }
+
+    #[test]
+    fn google_yandex_apple_items() {
+        let mut fx = Fx::failing();
+        let p = |c: &[Check], id: &str| get(c, id).presence;
+        let html = r#"<html lang="ko"><head><title>| 제목만</title><link rel="canonical" href="https://a.com/en#top">
+<link rel="icon" href="/f.png"><link rel="alternate" hreflang="en" href="https://a.com/en"><link rel="alternate" hreflang="en-UK" href="/uk" media="print">
+<link rel="alternate" hreflang="en" href="https://a.com/en2"><link rel="prev" href="/1">
+<meta name="robots" content="index, noindex, no-index, max-snippet:10, nosnippet, unavailable_after: 2000-01-01">
+<meta name="applebot" content="noindex"><meta name="yandex" content="nofollow"><meta name="google" content="notranslate">
+<meta name="rating" content="adult"><meta name="yandex-verification" content="y"><meta name="apple-itunes-app" content="app-id=abc">
+<meta property="og:site_name" content="에이"><meta property="article:modified_time" content="2099-06-01">
+<script type="application/ld+json">[{"@type":"WebSite","name":"A"},{"@type":["WebSite"]},{"@type":"Article","isAccessibleForFree":false,"datePublished":"2099-01-01","dateModified":"2000-01-01"}]</script></head>
+<body><p data-nosnippet>x</p><img data-src="a.jpg"><img src="b.tiff"><p style="font-size:0">숨김</p><a href="/a b">공백</a>
+<a href="https://b.com" rel="sponsored">광고</a><a href="/my_page">밑줄</a><noindex>숨김</noindex>
+<p>English body text that is long enough to be latin</p></body></html>"#;
+        fx.page = page("https://a.com/list?page=2", html);
+        fx.page.body_bytes = 3 * 1024 * 1024;
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let h = &mut fx.page.headers;
+        h.clear();
+        h.insert("link", r#"<https://a.com/other>; rel="canonical", <https://a.com/ja>; rel="alternate"; hreflang="ja""#.parse().unwrap());
+        h.append(
+            "x-robots-tag",
+            "applebot: nosnippet, yandex: noarchive".parse().unwrap(),
+        );
+        fx.robots = found(
+            "https://a.com/robots.txt",
+            "User-agent: *\nDisallow: /f.png\nDisallow: /sitemap.xml\nNoindex: /x\nClean-param: ref\nAllow: notslash\n",
+        );
+        fx.sitemap = found(
+            "https://a.com/sitemap.xml",
+            "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>https://a.com/</loc><lastmod>2099-01-01</lastmod>\
+             <xhtml:link/><news:news><news:publication_date>2000-01-01</news:publication_date></news:news></url><url></url></urlset>",
+        );
+        fx.extended.now = 1_800_000_000;
+        fx.extended.search.conditional = Some(Ok(304));
+        fx.ai_ua = vec![("gptbot", Ok((200, u("https://other.com/"), None, None)))];
+        fx.extended.favicon_image = Some(Ok(ImageInfo {
+            url: "https://a.com/f.png".into(),
+            status: 200,
+            content_type: Some("image/png".into()),
+            bytes: 10,
+            truncated: false,
+            width: Some(16),
+            height: Some(32),
+        }));
+        fx.extended.og_image = Some(Ok(ImageInfo {
+            url: "https://a.com/o.png".into(),
+            status: 200,
+            content_type: Some("image/png".into()),
+            bytes: 10,
+            truncated: false,
+            width: Some(600),
+            height: Some(300),
+        }));
+        fx.well_known.apple_app_site_association =
+            found("http://a.com/.well-known/apple-app-site-association", "{}");
+        fx.well_known.apple_app_site_association.redirected = true;
+        let c = fx.run();
+        for id in [
+            "crawling.robots_rule_errors",
+            "crawling.robots_unsupported_directives",
+            "crawling.robots_clean_param",
+            "crawling.robots_blocks_favicon_googlebot",
+            "crawling.sitemap_future_lastmod",
+            "crawling.sitemap_invalid_xml",
+            "crawling.sitemap_extensions",
+            "crawling.sitemap_extension_errors",
+            "crawling.sitemap_news_stale",
+            "crawling.sitemap_blocked_by_robots",
+            "meta.canonical_header",
+            "meta.canonical_conflict",
+            "meta.canonical_fragment",
+            "structured_data.hreflang_invalid",
+            "structured_data.hreflang_other_sources",
+            "structured_data.hreflang_canonical_conflict",
+            "crawling.over_googlebot_size_limit",
+            "crawling.conditional_request_304",
+            "transport.ua_redirect_mismatch",
+            "indexing.robots_unknown_directives",
+            "indexing.unavailable_after_passed",
+            "indexing.robots_conflicting_directives",
+            "indexing.data_nosnippet_invalid_element",
+            "indexing.applebot_meta",
+            "indexing.yandex_meta",
+            "indexing.yandex_noindex_tag",
+            "indexing.google_meta",
+            "meta.rating",
+            "meta.yandex_site_verification",
+            "meta.title_half_empty",
+            "meta.title_script_mismatch",
+            "content.img_missing_src",
+            "content.img_unsupported_format",
+            "open_graph.image_under_1200",
+            "geo.future_dates",
+            "structured_data.website_duplicate",
+            "structured_data.site_name_mismatch",
+            "structured_data.is_accessible_for_free",
+            "content.hidden_text_styles",
+            "content.unencoded_link_urls",
+            "content.outbound_link_qualifiers",
+            "content.underscore_url_paths",
+            "crawling.rel_next_prev",
+            "meta.apple_app_site_association_valid",
+            "meta.apple_itunes_app_valid",
+        ] {
+            assert_eq!(p(&c, id), Presence::Present, "{id}");
+        }
+        assert_eq!(p(&c, "meta.favicon_google_eligible"), Presence::Missing);
+        assert_eq!(
+            p(&c, "meta.paginated_canonical_to_first"),
+            Presence::Missing
+        );
+
+        // 깨끗한 페이지
+        let html = r#"<html lang="en"><head><title>Clean title</title><link rel="canonical" href="https://a.com/list?q=a">
+<link rel="alternate" hreflang="ko" href="https://a.com/ko"><meta name="robots" content="index, follow">
+<meta name="apple-itunes-app" content="app-id=123"><script type="application/ld+json">{"@type":"WebSite","name":"A"}</script>
+<meta property="og:site_name" content="A"></head><body><p>English body</p></body></html>"#;
+        fx.page = page("https://a.com/list?page=3&q=a", html);
+        fx.page.headers.clear();
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        fx.robots = found("https://a.com/robots.txt", "User-agent: *\nAllow: /\n");
+        fx.sitemap = found(
+            "https://a.com/sitemap.xml",
+            "<urlset><url><loc>https://a.com/</loc><lastmod>2020-01-01</lastmod></url></urlset>",
+        );
+        fx.extended.search.conditional = Some(Ok(200));
+        fx.ai_ua = vec![("gptbot", Ok((200, u("https://a.com/"), None, None)))];
+        fx.extended.favicon_image = Some(Ok(ImageInfo {
+            url: "x".into(),
+            status: 200,
+            content_type: Some("image/x-icon".into()),
+            bytes: 1,
+            truncated: false,
+            width: Some(48),
+            height: Some(48),
+        }));
+        fx.extended.og_image = Some(Ok(ImageInfo {
+            url: "x".into(),
+            status: 200,
+            content_type: None,
+            bytes: 1,
+            truncated: false,
+            width: Some(1200),
+            height: Some(630),
+        }));
+        fx.well_known.apple_app_site_association = found(
+            "https://a.com/.well-known/apple-app-site-association",
+            r#"{"applinks":{}}"#,
+        );
+        let c = fx.run();
+        for id in [
+            "crawling.robots_rule_errors",
+            "crawling.robots_unsupported_directives",
+            "crawling.robots_blocks_favicon_googlebot",
+            "crawling.sitemap_future_lastmod",
+            "crawling.sitemap_invalid_xml",
+            "crawling.sitemap_extensions",
+            "crawling.sitemap_blocked_by_robots",
+            "meta.canonical_header",
+            "meta.canonical_fragment",
+            "structured_data.hreflang_invalid",
+            "structured_data.hreflang_canonical_conflict",
+            "crawling.conditional_request_304",
+            "transport.ua_redirect_mismatch",
+            "indexing.robots_unknown_directives",
+            "indexing.robots_conflicting_directives",
+            "meta.title_half_empty",
+            "meta.title_script_mismatch",
+            "open_graph.image_under_1200",
+            "structured_data.website_duplicate",
+            "structured_data.site_name_mismatch",
+            "meta.apple_app_site_association_valid",
+            "meta.apple_itunes_app_valid",
+        ] {
+            assert_eq!(p(&c, id), Presence::Missing, "{id}");
+        }
+        assert_eq!(p(&c, "meta.favicon_google_eligible"), Presence::Present);
+        assert_eq!(
+            p(&c, "meta.paginated_canonical_to_first"),
+            Presence::Present
+        );
+        for id in [
+            "crawling.sitemap_extension_errors",
+            "crawling.sitemap_news_stale",
+            "meta.canonical_conflict",
+            "indexing.unavailable_after_passed",
+            "geo.future_dates",
+            "content.outbound_link_qualifiers",
+        ] {
+            assert_eq!(p(&c, id), Presence::NotApplicable, "{id}");
+        }
+
+        // 요청 실패·대상 없음
+        fx.robots = failed("r");
+        fx.extended.search.conditional = Some(err());
+        fx.extended.favicon_image = Some(err());
+        fx.ai_ua = vec![("gptbot", err())];
+        let html = r#"<html><head><meta name="robots" content="unavailable_after: 내일"><meta property="article:published_time" content="2020-01-01">
+<meta property="article:modified_time" content="2010-01-01"></head><body></body></html>"#;
+        fx.page = page("https://a.com/x?page=1&q=a", html);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let c = fx.run();
+        assert_eq!(p(&c, "crawling.robots_rule_errors"), Presence::Unknown);
+        assert_eq!(
+            p(&c, "crawling.robots_blocks_favicon_googlebot"),
+            Presence::Unknown
+        );
+        assert_eq!(p(&c, "crawling.conditional_request_304"), Presence::Unknown);
+        assert_eq!(p(&c, "meta.favicon_google_eligible"), Presence::Unknown);
+        assert_eq!(
+            p(&c, "indexing.unavailable_after_passed"),
+            Presence::Unknown
+        );
+        assert_eq!(
+            p(&c, "transport.ua_redirect_mismatch"),
+            Presence::NotApplicable
+        );
+        assert_eq!(p(&c, "meta.title_half_empty"), Presence::NotApplicable);
+        assert_eq!(p(&c, "geo.future_dates"), Presence::Present);
+        fx.robots = FileProbe {
+            status_code: Some(404),
+            ..Default::default()
+        };
+        fx.extended.search.conditional = None;
+        fx.extended.favicon_image = None;
+        fx.well_known.apple_app_site_association =
+            found("https://a.com/.well-known/apple-app-site-association", "x");
+        let c = fx.run();
+        assert_eq!(
+            p(&c, "crawling.robots_rule_errors"),
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            p(&c, "crawling.conditional_request_304"),
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            p(&c, "meta.favicon_google_eligible"),
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            p(&c, "meta.apple_app_site_association_valid"),
+            Presence::Present
+        );
     }
 }

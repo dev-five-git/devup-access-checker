@@ -1287,7 +1287,11 @@ async fn search_engine_network_items() {
     };
     Mock::given(method("GET"))
         .and(path("/"))
-        .respond_with(ok("text/html", page))
+        .respond_with(
+            ok("text/html", page)
+                .insert_header("etag", "\"v1\"")
+                .insert_header("last-modified", "Wed, 21 Oct 2026 07:28:00 GMT"),
+        )
         .mount(&s)
         .await;
     Mock::given(method("GET"))

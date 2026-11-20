@@ -69,6 +69,16 @@ pub struct SitemapIssues {
     pub invalid_loc: Vec<String>,
     /// sitemap 파일이 있는 디렉터리 밖(또는 스킴·포트가 다른) 같은 호스트 URL
     pub out_of_scope: Vec<String>,
+    /// 구조 오류 (루트 요소, loc 없는 url, 중첩 index)
+    pub structure_errors: Vec<String>,
+    /// lastmod 값 전체
+    pub lastmods: Vec<String>,
+    /// 확장 사용 수 (image, video, news, xhtml:link)
+    pub extensions: [usize; 4],
+    /// 확장 태그 오류
+    pub extension_errors: Vec<String>,
+    /// news:publication_date 값
+    pub news_dates: Vec<String>,
 }
 
 fn sample(v: &mut Vec<String>, s: &str) {
@@ -100,6 +110,70 @@ pub fn validate(xml: &str, sitemap_url: &url::Url) -> SitemapIssues {
             sample(&mut out.invalid_lastmod, &c[1]);
         }
     }
+    static URL_BLOCK: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<url>(.*?)</url>").unwrap());
+    static VIDEO: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<video:video>(.*?)</video:video>").unwrap());
+    static NEWS: LazyLock<Regex> =
+        LazyLock::new(|| Regex::new(r"(?is)<news:news>(.*?)</news:news>").unwrap());
+    static NEWS_DATE: LazyLock<Regex> = LazyLock::new(|| {
+        Regex::new(r"(?is)<news:publication_date>\s*(.*?)\s*</news:publication_date>").unwrap()
+    });
+    let lower = xml.to_ascii_lowercase();
+    if !lower.contains("<urlset") && !lower.contains("<sitemapindex") {
+        out.structure_errors
+            .push("루트 요소가 urlset·sitemapindex 가 아님".into());
+    }
+    if lower.matches("<sitemapindex").count() > 1 {
+        out.structure_errors.push("sitemap index 안에 index".into());
+    }
+    for c in URL_BLOCK.captures_iter(xml) {
+        if !c[1].to_ascii_lowercase().contains("<loc") {
+            sample(&mut out.structure_errors, "loc 없는 url");
+        }
+        if c[1].to_ascii_lowercase().matches("<image:image").count() > 1000 {
+            sample(&mut out.extension_errors, "url 하나에 image 1000개 초과");
+        }
+    }
+    out.lastmods = LASTMOD_VALUE
+        .captures_iter(xml)
+        .map(|c| c[1].to_string())
+        .collect();
+    out.extensions = ["<image:image", "<video:video", "<news:news", "<xhtml:link"]
+        .map(|t| lower.matches(t).count());
+    if out.extensions[2] > 1000 {
+        out.extension_errors.push("news 1000개 초과".into());
+    }
+    for c in VIDEO.captures_iter(xml) {
+        let b = c[1].to_ascii_lowercase();
+        let missing: Vec<&str> = ["thumbnail_loc", "title", "description"]
+            .into_iter()
+            .filter(|t| !b.contains(&format!("<video:{t}")))
+            .collect();
+        if !missing.is_empty()
+            || !(b.contains("<video:content_loc") || b.contains("<video:player_loc"))
+        {
+            sample(&mut out.extension_errors, "video 필수 태그 누락");
+        }
+    }
+    for c in NEWS.captures_iter(xml) {
+        let b = c[1].to_ascii_lowercase();
+        if ![
+            "<news:name",
+            "<news:language",
+            "<news:publication_date",
+            "<news:title",
+        ]
+        .iter()
+        .all(|t| b.contains(t))
+        {
+            sample(&mut out.extension_errors, "news 필수 태그 누락");
+        }
+    }
+    out.news_dates = NEWS_DATE
+        .captures_iter(xml)
+        .map(|c| c[1].to_string())
+        .collect();
     let plain = CDATA.replace_all(xml, "");
     out.unescaped_ampersands = plain.matches('&').count() - ENTITY.find_iter(&plain).count();
     let dir = &sitemap_url.path()[..=sitemap_url.path().rfind('/').unwrap_or(0)];
@@ -170,7 +244,47 @@ mod tests {
             "<urlset><url><loc>https://a.com/x</loc></url></urlset>",
             &root,
         );
-        assert_eq!(v, SitemapIssues::default());
+        assert_eq!(v.out_of_scope, Vec::<String>::new());
+        assert!(v.structure_errors.is_empty() && v.extension_errors.is_empty());
+        let ext = validate(
+            "<sitemapindex><sitemapindex></sitemapindex></sitemapindex><url><lastmod>2030-01-01</lastmod></url>\
+             <url><loc>https://a.com/v</loc><video:video><video:title>t</video:title></video:video>\
+             <news:news><news:publication_date>2026-01-01</news:publication_date></news:news><image:image></image:image>\
+             <xhtml:link/></url>",
+            &root,
+        );
+        assert_eq!(
+            ext.structure_errors,
+            ["sitemap index 안에 index", "loc 없는 url"]
+        );
+        assert_eq!(
+            ext.extension_errors,
+            ["video 필수 태그 누락", "news 필수 태그 누락"]
+        );
+        assert_eq!(ext.extensions, [1, 1, 1, 1]);
+        assert_eq!((ext.lastmods.len(), ext.news_dates.len()), (1, 1));
+        let ok = validate(
+            "<urlset><url><loc>https://a.com/v</loc><video:video><video:thumbnail_loc>t</video:thumbnail_loc><video:title>t</video:title>\
+             <video:description>d</video:description><video:player_loc>p</video:player_loc></video:video>\
+             <news:news><news:publication><news:name>n</news:name><news:language>ko</news:language></news:publication>\
+             <news:publication_date>2026</news:publication_date><news:title>t</news:title></news:news></url></urlset>",
+            &root,
+        );
+        assert!(ok.extension_errors.is_empty());
+        assert_eq!(
+            validate("<html></html>", &root).structure_errors,
+            ["루트 요소가 urlset·sitemapindex 가 아님"]
+        );
+        let images: String = (0..1001).map(|_| "<image:image/>").collect();
+        let news: String = (0..1001).map(|_| "<news:news><news:name/><news:language/><news:publication_date/><news:title/></news:news>").collect();
+        let big = validate(
+            &format!("<urlset><url><loc>https://a.com/</loc>{images}{news}</url></urlset>"),
+            &root,
+        );
+        assert_eq!(
+            big.extension_errors,
+            ["url 하나에 image 1000개 초과", "news 1000개 초과"]
+        );
         let many: String = (0..25).map(|_| "<priority>9</priority>").collect();
         assert_eq!(validate(&many, &root).invalid_priority.len(), 20);
     }

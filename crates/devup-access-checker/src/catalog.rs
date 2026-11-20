@@ -66,6 +66,46 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Indexing,
         "robots.txt 로 막혀 noindex 를 볼 수 없음",
     ),
+    (
+        "indexing.robots_unknown_directives",
+        Indexing,
+        "알 수 없는 robots 지시어",
+    ),
+    (
+        "indexing.unavailable_after_passed",
+        Indexing,
+        "unavailable_after 날짜 지남",
+    ),
+    (
+        "indexing.robots_conflicting_directives",
+        Indexing,
+        "상충하는 robots 지시어 (index+noindex 등)",
+    ),
+    (
+        "indexing.data_nosnippet_invalid_element",
+        Indexing,
+        "span·div·section 외 요소의 data-nosnippet",
+    ),
+    (
+        "indexing.applebot_meta",
+        Indexing,
+        "Apple 전용 robots 지시 (meta applebot·X-Robots-Tag applebot:)",
+    ),
+    (
+        "indexing.yandex_meta",
+        Indexing,
+        "Yandex 전용 robots 지시 (meta yandex·X-Robots-Tag yandex:)",
+    ),
+    (
+        "indexing.yandex_noindex_tag",
+        Indexing,
+        "Yandex <noindex> 태그",
+    ),
+    (
+        "indexing.google_meta",
+        Indexing,
+        "meta name=google (notranslate 등)",
+    ),
     ("open_graph.title", OpenGraph, "og:title"),
     ("open_graph.description", OpenGraph, "og:description"),
     ("open_graph.image", OpenGraph, "og:image"),
@@ -268,14 +308,24 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "Naver 크롤러 허용 (Yeti)",
     ),
     (
-        "crawling.robots_allows.daumoa",
+        "crawling.robots_allows.daum",
         Crawling,
-        "Daum 크롤러 허용 (Daumoa)",
+        "Daum 크롤러 허용 (Daum)",
     ),
     (
         "crawling.robots_allows.applebot",
         Crawling,
         "Apple 검색(Siri·Spotlight) 크롤러 허용 (Applebot)",
+    ),
+    (
+        "crawling.robots_allows.googlebot_image",
+        Crawling,
+        "Google 이미지 크롤러 허용 (Googlebot-Image)",
+    ),
+    (
+        "crawling.robots_allows.yandex",
+        Crawling,
+        "Yandex 크롤러 허용 (Yandex)",
     ),
     ("geo.llms_txt", Geo, "llms.txt"),
     ("geo.llms_full_txt", Geo, "llms-full.txt"),
@@ -426,6 +476,7 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Geo,
         "AI UA 응답 (perplexitybot)",
     ),
+    ("geo.ua_access.ccbot", Geo, "AI UA 응답 (ccbot)"),
     ("geo.meta_noai", Geo, "meta noai / noimageai 지시"),
     (
         "not_found_page.returns_404",
@@ -494,6 +545,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "open_graph.image_socialonly",
         OpenGraph,
         "og:image socialonly (Bing 뉴스)",
+    ),
+    (
+        "open_graph.image_under_1200",
+        OpenGraph,
+        "og:image 가로 1200px 미만 (Discover)",
     ),
     ("twitter.site", Twitter, "twitter:site"),
     ("twitter.creator", Twitter, "twitter:creator"),
@@ -707,6 +763,36 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "content.button_type_missing",
         Content,
         "폼 안의 type 없는 button (submit 으로 동작)",
+    ),
+    (
+        "content.img_missing_src",
+        Content,
+        "src 없는 이미지 (data-src 만·picture 에 img 없음)",
+    ),
+    (
+        "content.img_unsupported_format",
+        Content,
+        "Google 이미지 미지원 형식",
+    ),
+    (
+        "content.hidden_text_styles",
+        Content,
+        "인라인 CSS 로 숨긴 텍스트·링크",
+    ),
+    (
+        "content.unencoded_link_urls",
+        Content,
+        "퍼센트 인코딩 안 된 링크 URL (공백·비ASCII)",
+    ),
+    (
+        "content.outbound_link_qualifiers",
+        Content,
+        "외부 링크 rel (sponsored·ugc·nofollow)",
+    ),
+    (
+        "content.underscore_url_paths",
+        Content,
+        "밑줄로 단어를 구분한 URL",
     ),
     (
         "performance.render_blocking_scripts",
@@ -1490,6 +1576,16 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Crawling,
         "검색 크롤러 UA 응답 (bingbot)",
     ),
+    (
+        "crawling.ua_access.applebot",
+        Crawling,
+        "검색 크롤러 UA 응답 (applebot)",
+    ),
+    (
+        "crawling.ua_access.daum",
+        Crawling,
+        "검색 크롤러 UA 응답 (daum)",
+    ),
     ("crawling.feed_valid", Crawling, "피드 형식 유효 (RSS·Atom)"),
     ("crawling.feed_items", Crawling, "피드 item 수"),
     (
@@ -1570,6 +1666,67 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "sitemap 위치 밖 URL",
     ),
     ("crawling.sitemap_encoding", Crawling, "sitemap UTF-8"),
+    (
+        "crawling.robots_rule_errors",
+        Crawling,
+        "robots.txt 규칙 형식 오류",
+    ),
+    (
+        "crawling.robots_unsupported_directives",
+        Crawling,
+        "robots.txt 미지원 지시자 (noindex·host 등)",
+    ),
+    (
+        "crawling.robots_clean_param",
+        Crawling,
+        "robots.txt Clean-param (Yandex)",
+    ),
+    (
+        "crawling.robots_blocks_favicon_googlebot",
+        Crawling,
+        "robots.txt 가 favicon 차단 (Googlebot-Image)",
+    ),
+    (
+        "crawling.sitemap_future_lastmod",
+        Crawling,
+        "sitemap 미래 lastmod",
+    ),
+    (
+        "crawling.sitemap_invalid_xml",
+        Crawling,
+        "sitemap 구조 오류 (루트·loc 없는 url·중첩 index)",
+    ),
+    (
+        "crawling.sitemap_extensions",
+        Crawling,
+        "sitemap 확장 (image·video·news·hreflang)",
+    ),
+    (
+        "crawling.sitemap_extension_errors",
+        Crawling,
+        "sitemap 확장 태그 오류",
+    ),
+    (
+        "crawling.sitemap_news_stale",
+        Crawling,
+        "news sitemap 의 2일 지난 기사",
+    ),
+    (
+        "crawling.sitemap_blocked_by_robots",
+        Crawling,
+        "robots.txt 가 sitemap 파일을 차단",
+    ),
+    (
+        "crawling.over_googlebot_size_limit",
+        Crawling,
+        "Googlebot 2MB 초과 (HTML·JS)",
+    ),
+    (
+        "crawling.conditional_request_304",
+        Crawling,
+        "조건부 요청 304 지원",
+    ),
+    ("crawling.rel_next_prev", Crawling, "rel=next·prev"),
     ("geo.question_headings", Geo, "질문형 헤딩 (h2~h4)"),
     ("geo.lists", Geo, "목록 (항목 2개 이상 ul/ol, dl)"),
     ("geo.tables", Geo, "표"),
@@ -1629,6 +1786,7 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
     ("geo.a2a_agent_card", Geo, "A2A 에이전트 카드"),
     ("geo.quotations", Geo, "인용문 (blockquote·q)"),
     ("geo.statistics", Geo, "수치·통계 표기"),
+    ("geo.future_dates", Geo, "미래·역전된 게시일·수정일"),
     (
         "structured_data.speakable",
         StructuredData,
@@ -1721,6 +1879,53 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "manifest start_url 범위 오류",
     ),
     (
+        "meta.canonical_header",
+        Meta,
+        "canonical HTTP 헤더 (Link rel=canonical)",
+    ),
+    (
+        "meta.canonical_conflict",
+        Meta,
+        "canonical 지정 방식 간 불일치 (HTML·헤더)",
+    ),
+    ("meta.canonical_fragment", Meta, "canonical 에 # 프래그먼트"),
+    (
+        "meta.paginated_canonical_to_first",
+        Meta,
+        "페이지네이션 2쪽 이상의 canonical 이 1쪽",
+    ),
+    ("meta.rating", Meta, "SafeSearch 성인 표시 (meta rating)"),
+    (
+        "meta.yandex_site_verification",
+        Meta,
+        "Yandex 웹마스터 인증",
+    ),
+    (
+        "meta.favicon_google_eligible",
+        Meta,
+        "Google 파비콘 요건 (정사각형·8px 이상·형식)",
+    ),
+    (
+        "meta.title_half_empty",
+        Meta,
+        "반쪽 title (구분자로 시작·끝남)",
+    ),
+    (
+        "meta.title_script_mismatch",
+        Meta,
+        "title 과 본문의 문자 체계 불일치",
+    ),
+    (
+        "meta.apple_app_site_association_valid",
+        Meta,
+        "AASA 파일 요건 위반",
+    ),
+    (
+        "meta.apple_itunes_app_valid",
+        Meta,
+        "apple-itunes-app 형식 오류",
+    ),
+    (
         "structured_data.hreflang_reciprocal",
         StructuredData,
         "hreflang 상호 참조",
@@ -1800,6 +2005,36 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "structured_data.naver.video_channel",
         StructuredData,
         "네이버 동영상 채널 필수 속성",
+    ),
+    (
+        "structured_data.hreflang_invalid",
+        StructuredData,
+        "잘못된 hreflang (코드·URL·media·중복)",
+    ),
+    (
+        "structured_data.hreflang_other_sources",
+        StructuredData,
+        "hreflang (HTTP 헤더·sitemap)",
+    ),
+    (
+        "structured_data.hreflang_canonical_conflict",
+        StructuredData,
+        "canonical 이 다른 언어 버전을 가리킴",
+    ),
+    (
+        "structured_data.website_duplicate",
+        StructuredData,
+        "WebSite 구조화 데이터 중복",
+    ),
+    (
+        "structured_data.site_name_mismatch",
+        StructuredData,
+        "WebSite.name 과 og:site_name 불일치",
+    ),
+    (
+        "structured_data.is_accessible_for_free",
+        StructuredData,
+        "isAccessibleForFree (유료 콘텐츠 표시)",
     ),
     ("performance.external_css", Performance, "외부 CSS 분석"),
     (
@@ -1983,6 +2218,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "transport.security_txt_canonical_mismatch",
         Transport,
         "security.txt Canonical 에 실제 URL 없음",
+    ),
+    (
+        "transport.ua_redirect_mismatch",
+        Transport,
+        "UA 별 다른 최종 호스트 (교묘한 리다이렉트 의심)",
     ),
 ];
 

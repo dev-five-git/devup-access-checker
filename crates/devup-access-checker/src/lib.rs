@@ -18,6 +18,7 @@ mod checks;
 mod css;
 mod extra;
 mod fetch;
+mod google;
 mod html;
 mod llms;
 mod model;
@@ -761,22 +762,34 @@ impl Checker {
                 let url = at("/.well-known/change-password");
                 Some(fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, &url, 0).await)
             };
+            let conditional = async {
+                let etag = page.headers.get("etag").and_then(|v| v.to_str().ok());
+                let lm = page
+                    .headers
+                    .get("last-modified")
+                    .and_then(|v| v.to_str().ok());
+                if etag.is_none() && lm.is_none() {
+                    return None;
+                }
+                Some(fetch::conditional_status(&probe, &base, etag, lm).await)
+            };
             let gpc_url = at("/.well-known/gpc.json");
             let gpc = fetch::probe_file(&probe, &gpc_url, Json);
             let (
                 (feed, bing, not_found_chain, indexnow),
                 (llms_subpath, agent_card, robots_chain),
-                (change_password, gpc),
+                (change_password, gpc, conditional),
             ) = tokio::join!(
                 async { tokio::join!(feed, bing, not_found_chain, indexnow) },
                 async { tokio::join!(llms_subpath, agent_card, robots_chain) },
-                async { tokio::join!(change_password, gpc) },
+                async { tokio::join!(change_password, gpc, conditional) },
             );
             checks::SearchProbes {
                 llms_subpath,
                 agent_card: Some(agent_card),
                 change_password,
                 gpc: Some(gpc),
+                conditional,
                 robots_chain,
                 feed,
                 bing_site_auth: Some(bing),

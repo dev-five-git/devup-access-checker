@@ -750,6 +750,24 @@ pub async fn head_length(client: &Client, url: &Url) -> Result<(u16, Option<u64>
 }
 
 /// AI 크롤러 UA 요청: (상태, 최종 URL, 챌린지 공급자). 본문은 200KB 까지만 본다.
+/// ETag·Last-Modified 로 조건부 GET 을 보내 상태 코드를 받는다 (304 지원 확인).
+pub async fn conditional_status(
+    client: &Client,
+    url: &Url,
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<u16, String> {
+    let mut req = client.get(url.as_str());
+    if let Some(e) = etag {
+        req = req.header(reqwest::header::IF_NONE_MATCH, e);
+    }
+    if let Some(l) = last_modified {
+        req = req.header(reqwest::header::IF_MODIFIED_SINCE, l);
+    }
+    let res = req.send().await.map_err(describe_owned)?;
+    Ok(res.status().as_u16())
+}
+
 /// (상태 코드, 최종 URL, 봇 차단 공급자, `<title>`)
 pub type UaProbe = (u16, Url, Option<&'static str>, Option<String>);
 

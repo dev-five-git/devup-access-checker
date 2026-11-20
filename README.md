@@ -139,6 +139,14 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `indexing.naver_directives` | 네이버 전용 지시어 (nosourceinfo·nosublinks·nosublink) |
 | `indexing.bingbot_meta` | Bing 전용 robots 지시 (meta bingbot·X-Robots-Tag bingbot:) |
 | `indexing.noindex_blocked_by_robots` | robots.txt 로 막혀 noindex 를 볼 수 없음 |
+| `indexing.robots_unknown_directives` | 알 수 없는 robots 지시어 |
+| `indexing.unavailable_after_passed` | unavailable_after 날짜 지남 |
+| `indexing.robots_conflicting_directives` | 상충하는 robots 지시어 (index+noindex 등) |
+| `indexing.data_nosnippet_invalid_element` | span·div·section 외 요소의 data-nosnippet |
+| `indexing.applebot_meta` | Apple 전용 robots 지시 (meta applebot·X-Robots-Tag applebot:) |
+| `indexing.yandex_meta` | Yandex 전용 robots 지시 (meta yandex·X-Robots-Tag yandex:) |
+| `indexing.yandex_noindex_tag` | Yandex <noindex> 태그 |
+| `indexing.google_meta` | meta name=google (notranslate 등) |
 | `open_graph.title` | og:title |
 | `open_graph.description` | og:description |
 | `open_graph.image` | og:image |
@@ -208,8 +216,10 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `crawling.robots_allows.googlebot` | Google 크롤러 허용 (Googlebot) |
 | `crawling.robots_allows.bingbot` | Bing 크롤러 허용 (Bingbot) |
 | `crawling.robots_allows.yeti` | Naver 크롤러 허용 (Yeti) |
-| `crawling.robots_allows.daumoa` | Daum 크롤러 허용 (Daumoa) |
+| `crawling.robots_allows.daum` | Daum 크롤러 허용 (Daum) |
 | `crawling.robots_allows.applebot` | Apple 검색(Siri·Spotlight) 크롤러 허용 (Applebot) |
+| `crawling.robots_allows.googlebot_image` | Google 이미지 크롤러 허용 (Googlebot-Image) |
+| `crawling.robots_allows.yandex` | Yandex 크롤러 허용 (Yandex) |
 | `geo.llms_txt` | llms.txt |
 | `geo.llms_full_txt` | llms-full.txt |
 | `geo.ai_txt` | ai.txt |
@@ -247,6 +257,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `geo.ua_access.gptbot` | AI UA 응답 (gptbot) |
 | `geo.ua_access.claudebot` | AI UA 응답 (claudebot) |
 | `geo.ua_access.perplexitybot` | AI UA 응답 (perplexitybot) |
+| `geo.ua_access.ccbot` | AI UA 응답 (ccbot) |
 | `geo.meta_noai` | meta noai / noimageai 지시 |
 | `not_found_page.returns_404` | 없는 경로에 404 응답 |
 | `not_found_page.custom` | 커스텀 404 페이지 |
@@ -276,6 +287,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `open_graph.type_unknown` | 명세에 없는 og:type 값 |
 | `open_graph.type_properties` | og:type 별 속성 (article:published_time 등) |
 | `open_graph.image_socialonly` | og:image socialonly (Bing 뉴스) |
+| `open_graph.image_under_1200` | og:image 가로 1200px 미만 (Discover) |
 | `twitter.site` | twitter:site |
 | `twitter.creator` | twitter:creator |
 | `twitter.image_alt` | twitter:image:alt |
@@ -325,6 +337,12 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `content.img_generic_filenames` | 의미 없는 이미지 파일명 (IMG_1234·숫자·해시) |
 | `content.parameter_heavy_links` | 파라미터가 많은 내부 링크 (3개 이상) |
 | `content.button_type_missing` | 폼 안의 type 없는 button (submit 으로 동작) |
+| `content.img_missing_src` | src 없는 이미지 (data-src 만·picture 에 img 없음) |
+| `content.img_unsupported_format` | Google 이미지 미지원 형식 |
+| `content.hidden_text_styles` | 인라인 CSS 로 숨긴 텍스트·링크 |
+| `content.unencoded_link_urls` | 퍼센트 인코딩 안 된 링크 URL (공백·비ASCII) |
+| `content.outbound_link_qualifiers` | 외부 링크 rel (sponsored·ugc·nofollow) |
+| `content.underscore_url_paths` | 밑줄로 단어를 구분한 URL |
 | `performance.render_blocking_scripts` | head 렌더링 차단 스크립트 (async/defer 없음) |
 | `performance.head_stylesheets` | head 외부 스타일시트 |
 | `performance.preconnect` | preconnect / dns-prefetch |
@@ -511,6 +529,8 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `crawling.sitemap_over_10mb` | sitemap 10MB 이상 (네이버 제출 한도) |
 | `crawling.ua_access.yeti` | 검색 크롤러 UA 응답 (yeti) |
 | `crawling.ua_access.bingbot` | 검색 크롤러 UA 응답 (bingbot) |
+| `crawling.ua_access.applebot` | 검색 크롤러 UA 응답 (applebot) |
+| `crawling.ua_access.daum` | 검색 크롤러 UA 응답 (daum) |
 | `crawling.feed_valid` | 피드 형식 유효 (RSS·Atom) |
 | `crawling.feed_items` | 피드 item 수 |
 | `crawling.feed_foreign_host` | 피드 안 다른 호스트·상대 경로 URL |
@@ -531,6 +551,19 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `crawling.sitemap_invalid_loc` | sitemap loc 형식 오류 |
 | `crawling.sitemap_out_of_scope` | sitemap 위치 밖 URL |
 | `crawling.sitemap_encoding` | sitemap UTF-8 |
+| `crawling.robots_rule_errors` | robots.txt 규칙 형식 오류 |
+| `crawling.robots_unsupported_directives` | robots.txt 미지원 지시자 (noindex·host 등) |
+| `crawling.robots_clean_param` | robots.txt Clean-param (Yandex) |
+| `crawling.robots_blocks_favicon_googlebot` | robots.txt 가 favicon 차단 (Googlebot-Image) |
+| `crawling.sitemap_future_lastmod` | sitemap 미래 lastmod |
+| `crawling.sitemap_invalid_xml` | sitemap 구조 오류 (루트·loc 없는 url·중첩 index) |
+| `crawling.sitemap_extensions` | sitemap 확장 (image·video·news·hreflang) |
+| `crawling.sitemap_extension_errors` | sitemap 확장 태그 오류 |
+| `crawling.sitemap_news_stale` | news sitemap 의 2일 지난 기사 |
+| `crawling.sitemap_blocked_by_robots` | robots.txt 가 sitemap 파일을 차단 |
+| `crawling.over_googlebot_size_limit` | Googlebot 2MB 초과 (HTML·JS) |
+| `crawling.conditional_request_304` | 조건부 요청 304 지원 |
+| `crawling.rel_next_prev` | rel=next·prev |
 | `geo.question_headings` | 질문형 헤딩 (h2~h4) |
 | `geo.lists` | 목록 (항목 2개 이상 ul/ol, dl) |
 | `geo.tables` | 표 |
@@ -554,6 +587,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `geo.a2a_agent_card` | A2A 에이전트 카드 |
 | `geo.quotations` | 인용문 (blockquote·q) |
 | `geo.statistics` | 수치·통계 표기 |
+| `geo.future_dates` | 미래·역전된 게시일·수정일 |
 | `structured_data.speakable` | speakable 속성 |
 | `meta.canonical_target_noindex` | canonical 대상 페이지 noindex |
 | `meta.canonical_target_mismatch` | canonical 대상이 2xx 아님 또는 다른 canonical |
@@ -585,6 +619,17 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `meta.manifest_name_length` | manifest name·short_name 길이 |
 | `meta.manifest_file_extension` | manifest 확장자 (.webmanifest) |
 | `meta.manifest_start_url_scope` | manifest start_url 범위 오류 |
+| `meta.canonical_header` | canonical HTTP 헤더 (Link rel=canonical) |
+| `meta.canonical_conflict` | canonical 지정 방식 간 불일치 (HTML·헤더) |
+| `meta.canonical_fragment` | canonical 에 # 프래그먼트 |
+| `meta.paginated_canonical_to_first` | 페이지네이션 2쪽 이상의 canonical 이 1쪽 |
+| `meta.rating` | SafeSearch 성인 표시 (meta rating) |
+| `meta.yandex_site_verification` | Yandex 웹마스터 인증 |
+| `meta.favicon_google_eligible` | Google 파비콘 요건 (정사각형·8px 이상·형식) |
+| `meta.title_half_empty` | 반쪽 title (구분자로 시작·끝남) |
+| `meta.title_script_mismatch` | title 과 본문의 문자 체계 불일치 |
+| `meta.apple_app_site_association_valid` | AASA 파일 요건 위반 |
+| `meta.apple_itunes_app_valid` | apple-itunes-app 형식 오류 |
 | `structured_data.hreflang_reciprocal` | hreflang 상호 참조 |
 | `structured_data.unknown_types` | schema.org 에 없는 @type |
 | `structured_data.rdfa` | RDFa |
@@ -602,6 +647,12 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `structured_data.naver.tv_series` | 네이버 TV 시리즈 필수 속성 |
 | `structured_data.naver.video` | 네이버 동영상 필수 속성 |
 | `structured_data.naver.video_channel` | 네이버 동영상 채널 필수 속성 |
+| `structured_data.hreflang_invalid` | 잘못된 hreflang (코드·URL·media·중복) |
+| `structured_data.hreflang_other_sources` | hreflang (HTTP 헤더·sitemap) |
+| `structured_data.hreflang_canonical_conflict` | canonical 이 다른 언어 버전을 가리킴 |
+| `structured_data.website_duplicate` | WebSite 구조화 데이터 중복 |
+| `structured_data.site_name_mismatch` | WebSite.name 과 og:site_name 불일치 |
+| `structured_data.is_accessible_for_free` | isAccessibleForFree (유료 콘텐츠 표시) |
 | `performance.external_css` | 외부 CSS 분석 |
 | `performance.font_face_without_display` | font-display 없는 @font-face |
 | `performance.page_weight` | 페이지 리소스 무게 |
@@ -649,3 +700,4 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `transport.security_txt_invalid` | security.txt 형식 위반 |
 | `transport.security_txt_signed` | security.txt 전자서명 |
 | `transport.security_txt_canonical_mismatch` | security.txt Canonical 에 실제 URL 없음 |
+| `transport.ua_redirect_mismatch` | UA 별 다른 최종 호스트 (교묘한 리다이렉트 의심) |
