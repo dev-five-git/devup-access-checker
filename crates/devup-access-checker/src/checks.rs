@@ -7870,8 +7870,6 @@ const LEGACY_JS: &[&str] = &[
     "_toConsumableArray(",
     "core-js/modules",
     "__core-js_shared__",
-    "Array.prototype.includes||",
-    "Object.assign||",
 ];
 
 /// 줄 앞 들여쓰기·빈 줄 바이트 (minify 로 줄일 수 있는 양의 추정).

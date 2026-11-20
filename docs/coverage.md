@@ -4,7 +4,7 @@
 
 표의 항목 id 는 모두 [`CATALOG`](../crates/devup-access-checker/src/catalog.rs)에 있으며, 테스트(`coverage_doc_ids_exist`)가 이를 확인합니다.
 
-`python scripts/check_coverage.py` 는 아래 기준의 최신 원문을 받아 대조표·내장 목록과 다시 대조하고, 빠진 이름이 있으면 출력합니다. axe-core 규칙, Lighthouse 감사, Google 구조화 데이터 문서, OWASP 권장 헤더, WCAG 2.2 성공 기준, Open Graph 속성, Web App Manifest 멤버, WHATWG HTML 폐기 속성, schema.org 타입, MDN 폐기·비표준 헤더가 대상입니다. KWCAG 2.2, Google 검색 센터 기본 요건, X Cards, 네이버 서치어드바이저, Bing 웹마스터 가이드라인은 원문이 기계로 읽을 수 있는 목록이 아니라서 사람이 대조했습니다.
+`python scripts/check_coverage.py` 는 아래 기준의 최신 원문을 받아 대조표·내장 목록과 다시 대조하고, 빠진 이름이 있으면 출력합니다. axe-core 규칙, Lighthouse 감사, Google 구조화 데이터 문서, OWASP 권장 헤더, WCAG 2.2 성공 기준, Open Graph 속성, Web App Manifest 멤버, WHATWG HTML 폐기 속성, schema.org 타입, MDN 폐기·비표준 헤더가 대상입니다. Observatory 테스트, webhint hint, HTMLHint 규칙도 대상입니다. KWCAG 2.2, Google 검색 센터 문서, X Cards, 네이버 서치어드바이저, Bing, Yandex, Daum, Apple, EN 301 549, IBM Equal Access, HTML_CodeSniffer, ARIA in HTML, W3C i18n checker, WAVE, Nu HTML Checker, AI·GEO 프로토콜 명세는 사람이 대조했습니다 (규칙 수는 각 절에 적었습니다).
 
 - [KWCAG 2.2 (33개 검사항목)](#kwcag-22)
 - [WCAG 2.2 (성공 기준 87개)](#wcag-22)
@@ -20,6 +20,11 @@
 - [MDN 폐기 헤더](#mdn-폐기-헤더)
 - [네이버 서치어드바이저](#네이버-서치어드바이저)
 - [Bing 웹마스터 가이드라인](#bing-웹마스터-가이드라인)
+- [검색엔진 문서 (2차)](#검색엔진-문서-2차)
+- [AI·GEO 프로토콜](#aigeo-프로토콜)
+- [보안 스캐너](#보안-스캐너)
+- [접근성 검사기](#접근성-검사기)
+- [HTML 검사기·성능](#html-검사기성능)
 - [생성형 검색(GEO)](#생성형-검색geo)
 - [확인할 수 없는 것 요약](#확인할-수-없는-것-요약)
 
@@ -597,6 +602,171 @@ MDN browser-compat-data 가 폐기(deprecated) 또는 비표준으로 표시한 
 | 사이트 추가·인증 | msvalidate.01 meta, BingSiteAuth.xml | `meta.bing_site_verification` `meta.bing_site_auth_file` |
 | IndexNow | 키 파일 | `crawling.indexnow_key_file` (키를 지정했을 때만) |
 | 확인 불가 | URL 제출·IndexNow 전송, 콘텐츠 제거 도구, 크롤 속도, Bingbot IP 검증, 콘텐츠 품질·어뷰징 판단, DNS 인증, mRSS 제출, Bingbot TLS 암호군 | 콘솔·외부 호출·의미 판단·TLS 핸드셰이크 열거가 필요 |
+
+## 검색엔진 문서 (2차)
+
+| 출처 | 대조 수 | 새로 넣은 항목 |
+|---|---|---|
+| Google 검색 센터 문서 전체 | 살아 있는 문서 187쪽 (구조화 데이터 40쪽은 위 표) | `crawling.robots_rule_errors` `crawling.robots_unsupported_directives` `crawling.robots_allows.googlebot_image` `crawling.robots_blocks_favicon_googlebot` `crawling.sitemap_invalid_xml` `crawling.sitemap_future_lastmod` `crawling.sitemap_extensions` `crawling.sitemap_extension_errors` `crawling.sitemap_news_stale` `crawling.sitemap_blocked_by_robots` `meta.canonical_header` `meta.canonical_conflict` `meta.canonical_fragment` `meta.paginated_canonical_to_first` `structured_data.hreflang_invalid` `structured_data.hreflang_other_sources` `structured_data.hreflang_canonical_conflict` `crawling.over_googlebot_size_limit` `crawling.conditional_request_304` `transport.ua_redirect_mismatch` `indexing.robots_unknown_directives` `indexing.unavailable_after_passed` `indexing.robots_conflicting_directives` `indexing.data_nosnippet_invalid_element` `indexing.google_meta` `meta.rating` `meta.favicon_google_eligible` `meta.title_half_empty` `meta.title_script_mismatch` `content.img_missing_src` `content.img_unsupported_format` `open_graph.image_under_1200` `geo.future_dates` `structured_data.website_duplicate` `structured_data.site_name_mismatch` `structured_data.is_accessible_for_free` `content.hidden_text_styles` `content.unencoded_link_urls` `content.outbound_link_qualifiers` `content.underscore_url_paths` `crawling.rel_next_prev` |
+| Yandex 웹마스터 도움말 | 176쪽 중 robots·meta·sitemap·canonical·favicon 등 약 25절 | `crawling.robots_allows.yandex` `crawling.robots_clean_param` `indexing.yandex_meta` `indexing.yandex_noindex_tag` `meta.yandex_site_verification` |
+| Daum 웹문서 검색 고객센터 | FAQ 10쪽 | `crawling.ua_access.daum`, robots 토큰을 `Daum` 으로 수정한 `crawling.robots_allows.daum` |
+| Apple (Applebot·앱 연결 문서) | 5쪽 | `crawling.robots_allows.applebot` `crawling.ua_access.applebot` `indexing.applebot_meta` `meta.apple_app_site_association_valid` `meta.apple_itunes_app_valid` |
+| sitemaps.org·Common Crawl | 3쪽 | `crawling.sitemap_namespace` `crawling.sitemap_invalid_priority` `crawling.sitemap_invalid_changefreq` `crawling.sitemap_invalid_lastmod` `crawling.sitemap_unescaped_entities` `crawling.sitemap_invalid_loc` `crawling.sitemap_out_of_scope` `crawling.sitemap_encoding` `geo.ua_access.ccbot` |
+
+robots.txt 해석은 Google 규칙에 맞췄습니다: 토큰 뒤 텍스트 무시(`Googlebot/2.1`), 가장 구체적인 그룹 대체(googlebot-image → googlebot), Crawl-delay 같은 비규칙 필드가 그룹을 끊지 않음, 429 를 5xx 처럼 취급. 별도 모바일 URL 의 메타 일치와 UA 별 동적 제공 비교는 모바일 UA 로 한 번 더 받아야 해 아직 넣지 않았습니다. 콘솔 기능, 스팸 의도 판단, 렌더링 후 상태는 확인할 수 없습니다.
+
+## AI·GEO 프로토콜
+
+| 출처 | 대조 수 | 새로 넣은 항목 |
+|---|---|---|
+| AI 크롤러 공식 문서 (OpenAI·Google·Meta·Amazon·Mistral·DuckDuckGo·Ai2·Webz.io) | 토큰 13개 | `geo.robots_allows.google_cloudvertexbot` `geo.robots_allows.googleother` `geo.robots_allows.meta_webindexer` `geo.robots_allows.oai_adsbot` `geo.robots_allows.amzn_searchbot` `geo.robots_allows.amzn_user` `geo.robots_allows.mistralai_user` `geo.robots_allows.mistralai_index` `geo.robots_allows.mistralai_training` `geo.robots_allows.duckassistbot` `geo.robots_allows.ai2bot` `geo.robots_allows.webzio_extended` (Applebot 은 검색 크롤러로 분류) |
+| ai.robots.txt 공동체 목록 | 209개 | 공식 문서로 확인한 토큰만 넣음 (나머지 192개는 출처 미확인) |
+| llmstxt.org | 형식 규칙 전체 | `geo.llms_txt_link_format` `geo.llms_txt_extra_headings` `geo.llms_txt_optional_section` `geo.llms_txt_describedby` `geo.llms_txt_subpath` |
+| IETF aipref·Content Signals·RSL·TDMRep·A2A | 5개 명세 | `geo.content_usage` `geo.content_signals` `geo.rsl_license` `geo.tdm_policy` `geo.tdm_reservation_invalid` `geo.a2a_agent_card` |
+| RFC 9309 | 규칙 전체 | `crawling.robots_content_type` `crawling.robots_orphan_rules` `crawling.robots_unreachable` `crawling.robots_redirect_hops` |
+| GEO 논문 (Aggarwal 외, KDD 2024) | 방법 9개 | `geo.quotations` `geo.statistics` (출처 인용은 `content.external_links`) |
+
+MCP 서버 발견(`/.well-known/mcp.json`)은 표준이 확정되지 않았고, NLWeb 은 공식 발견 방법이 없으며, ChatGPT 플러그인 manifest 는 폐지되어 넣지 않았습니다. C2PA 는 이미지 파일을 받아 해석해야 합니다.
+
+## 보안 스캐너
+
+[Mozilla HTTP Observatory](https://github.com/mdn/mdn-http-observatory) 의 테스트 12개(결과 코드 77개), [webhint](https://github.com/webhintio/hint) 의 hint 50개, RFC 9116 security.txt 필드 10개, IANA well-known URI 107개, hstspreload.org 제출 요건 6개를 대조했습니다. Observatory 와 webhint 목록은 `scripts/check_coverage.py` 가 저장소와 다시 대조합니다. securityheaders.com 은 비공개라 공개 글에 나온 경고 5개만 대조했습니다.
+
+| Observatory 테스트 | 항목 id | 비고 |
+|---|---|---|
+| cookies | `security.insecure_cookies` `security.cookie_samesite_invalid` `security.session_cookie_flags` `security.cookie_prefix_invalid` `security.cookie_syntax_invalid` | 리다이렉트 경유 응답의 쿠키는 보지 않음 |
+| cors | `security.cors_wildcard` | Origin 을 반사하는 자격증명 허용은 별도 요청이 필요해 미구현 |
+| cross-origin-embedder-policy | `security.cross_origin_embedder_policy` `security.cross_origin_policy_invalid` | — |
+| cross-origin-opener-policy | `security.cross_origin_opener_policy` `security.cross_origin_policy_invalid` | — |
+| cross-origin-resource-policy | `security.cross_origin_resource_policy` `security.cross_origin_policy_invalid` | — |
+| csp | `security.csp` `security.csp_meta` `security.csp_unsafe_inline` `security.csp_unsafe_eval` `security.csp_broad_script_source` `security.csp_object_src_unrestricted` `security.csp_unsafe_inline_style` `security.csp_insecure_scheme` `security.csp_base_uri_unrestricted` `security.csp_form_action_unrestricted` `security.csp_default_src_missing` `security.csp_strict_dynamic_without_nonce` `security.csp_duplicate_directives` `security.csp_report_only_only` `security.trusted_types` | — |
+| redirection | `transport.http_to_https_redirect` `transport.hsts_preload_ineligible` | http 요청의 첫 단계가 같은 호스트 https 인지는 preload 요건 안에서만 확인 |
+| referrer-policy | `security.referrer_policy` `security.referrer_policy_unsafe` | — |
+| strict-transport-security | `transport.hsts` `transport.hsts_invalid` `transport.hsts_max_age_short` `transport.hsts_preload_ineligible` | Chromium preload 목록 등재 여부 (외부 목록) |
+| subresource-integrity | `security.sri_missing` `security.sri_invalid` | — |
+| x-content-type-options | `security.x_content_type_options` `security.x_content_type_options_invalid` | — |
+| x-frame-options | `security.x_frame_options` `security.x_frame_options_invalid` `security.clickjacking_unprotected` | — |
+
+| webhint hint | 항목 id | 비고 |
+|---|---|---|
+| apple-touch-icons | `meta.apple_touch_icon` `meta.apple_touch_icon_file` | PNG·180px 확인은 미구현 (이미지 디코드 필요) |
+| axe | [axe-core 규칙](#axe-core-규칙) 표 | — |
+| babel-config | — | 확인 불가: 빌드 설정 파일 |
+| button-type | `content.button_type_missing` | — |
+| compat-api | — | 확인 불가: 대상 브라우저 설정과 호환성 데이터 필요 |
+| content-type | `transport.content_type_invalid` `transport.asset_content_type_mismatch` | — |
+| create-element-svg | — | 확인 불가: JS 소스 린트 |
+| css-prefix-order | `performance.css_prefix_order` | — |
+| detect-css-reflows | `performance.layout_animations` | — |
+| disown-opener | `security.target_blank_noopener` | — |
+| doctype | `meta.doctype` | — |
+| highest-available-document-mode | `meta.x_ua_compatible` | — |
+| html-checker | `accessibility.markup_errors` | 외부 Nu 서비스 (정적 부분은 [HTML 검사기](#html-검사기성능) 표) |
+| http-cache | `performance.cache_control` `performance.static_asset_cache` `performance.cache_control_conflict` `crawling.script_cache_busting` | — |
+| http-compression | `performance.compression` `performance.asset_compression` `performance.vary_accept_encoding_missing` | — |
+| https-only | `transport.https` `transport.mixed_content` `transport.https_to_http_redirect` | — |
+| ie-flexbox-compat | — | 해당 없음: IE 전용 |
+| image-optimization-cloudinary | — | 확인 불가: 외부 API |
+| leading-dot-classlist | — | 확인 불가: JS 소스 린트 |
+| manifest-app-name | `meta.manifest_name_length` | — |
+| manifest-exists | `meta.manifest` `links.manifest` | — |
+| manifest-file-extension | `meta.manifest_file_extension` | — |
+| manifest-icons | `meta.manifest_icons_192_512` `meta.manifest_maskable_icon` | 아이콘 실제 크기 (이미지 디코드) |
+| manifest-is-valid | `meta.manifest_content` `meta.manifest_display_valid` | — |
+| manifest-scoped-urls | `meta.manifest_start_url_scope` | — |
+| meta-charset-utf-8 | `meta.charset_not_utf8` `meta.charset_late` `meta.charset_duplicate` | — |
+| meta-theme-color | `meta.theme_color` `meta.theme_color_invalid` | — |
+| meta-viewport | `meta.viewport` `meta.viewport_invalid` `accessibility.zoom_disabled` | — |
+| minified-js | `performance.unminified_js` | — |
+| no-bom | `meta.bom` | — |
+| no-broken-links | `content.broken_internal_links` `content.broken_resources` | — |
+| no-disallowed-headers | `security.server_header` `security.x_powered_by` `security.info_disclosure_headers` `security.hpkp` `security.p3p` | Expires·Host·X-Frame-Options 금지 권고는 OWASP·Observatory 와 충돌해 따르지 않음 |
+| no-friendly-error-pages | — | 해당 없음: IE 전용 (`not_found_page.custom` 참고) |
+| no-html-only-headers | — | 미구현: 하위 리소스 응답 헤더 표본이 필요 |
+| no-http-redirects | `transport.redirect` `performance.asset_redirects` | — |
+| no-inline-styles | `performance.inline_style_attrs` `performance.inline_code_bytes` | — |
+| no-p3p | `security.p3p` | /w3c/p3p.xml 파일은 요청하지 않음 |
+| no-protocol-relative-urls | `security.protocol_relative_urls` | — |
+| no-vulnerable-javascript-libraries | — | 보류: 취약점 DB(retire.js 등)를 내장하고 갱신하는 설계가 필요 |
+| performance-budget | `performance.page_weight` `performance.html_bytes` | 네트워크 모델 기반 판정은 하지 않음 |
+| scoped-svg-styles | — | 확인 불가: CSS 선택자 적용 범위 계산 |
+| sri | `security.sri_missing` `security.sri_invalid` | 해시 일치 확인은 하지 않음 |
+| ssllabs | — | 확인 불가: 외부 API |
+| strict-transport-security | `transport.hsts` `transport.hsts_invalid` `transport.hsts_max_age_short` | — |
+| stylesheet-limits | — | 해당 없음: IE 전용 |
+| summary-display | `accessibility.summary_display_changed` | — |
+| typescript-config | — | 확인 불가: 빌드 설정 파일 |
+| validate-set-cookie-header | `security.cookie_syntax_invalid` `security.cookie_prefix_invalid` `security.cookie_samesite_invalid` | — |
+| webpack-config | — | 확인 불가: 빌드 설정 파일 |
+| x-content-type-options | `security.x_content_type_options` `security.x_content_type_options_invalid` | — |
+
+RFC 9116·IANA: `transport.security_txt` `transport.security_txt_fields`(10개 필드 값) `transport.security_txt_expired` `transport.security_txt_invalid` `transport.security_txt_signed` `transport.security_txt_canonical_mismatch` `security.change_password_url` `trust.gpc`. 서명 검증과 키 신뢰는 확인 불가입니다. IANA 목록의 나머지(openid-configuration·webfinger·mta-sts 등)는 일반 웹사이트의 존재 신호가 아니라서 넣지 않았습니다.
+
+## 접근성 검사기
+
+사람이 대조한 출처와 규칙 수입니다. 새로 넣은 항목은 아래와 같고, 나머지는 기존 항목으로 다루거나 렌더링·실행·의미 판단이 필요합니다.
+
+| 출처 | 대조 수 | 새로 넣은 항목 |
+|---|---|---|
+| IBM Equal Access | 규칙 170개 | `accessibility.aria_role_redundant` `accessibility.aria_role_not_allowed` `accessibility.aria_attr_not_allowed_for_role` `accessibility.aria_html_attr_conflict` `accessibility.aria_html_attr_redundant` `accessibility.aria_deprecated_attr` `accessibility.presentational_children_roles` `accessibility.duplicate_landmark_names` `accessibility.landmark_role_unnamed` `accessibility.activedescendant_unfocusable` `accessibility.combobox_pattern_invalid` `accessibility.tabbable_non_interactive` `accessibility.iframe_tabindex_negative` `accessibility.empty_labels` `accessibility.placeholder_only_label` `accessibility.form_submit_missing` `accessibility.decorative_img_conflict` `accessibility.figure_unlabeled` `accessibility.canvas_fallback_missing` `accessibility.mouse_only_handlers` `accessibility.css_blink` |
+| HTML_CodeSniffer (pa11y) | 메시지 179개 | `accessibility.presentation_semantic_children` `accessibility.label_for_not_control` `accessibility.alt_redundant_with_text` `accessibility.adjacent_duplicate_links` `accessibility.broken_fragment_links` `accessibility.xml_lang_without_lang` `accessibility.ruby_without_rt` |
+| ARIA in HTML | 요소 139개·속성 11개 | `accessibility.aria_attr_on_prohibited_element` 및 위 역할·속성 항목 |
+| W3C i18n checker | 보고 51종 | `meta.bom_in_content` `meta.xml_declaration` `meta.content_language_meta` `accessibility.dir_invalid` `accessibility.rtl_dir_missing` `accessibility.css_direction` `accessibility.bdo_without_dir` `content.bidi_control_chars` `accessibility.translate_invalid` `meta.charset_not_utf8` `meta.charset_late` |
+| WAVE | 항목 110개 | `accessibility.redundant_title_attr` `content.linked_documents` (나머지는 기존 항목) |
+| EN 301 549 V3.2.1 | 9장 외 조항 71개 | `accessibility.statement_link` `accessibility.media_controls_missing` `structured_data.accessibility_metadata` (9장은 WCAG 2.2 표) |
+
+EU 웹 접근성 지침 제7조의 피드백 수단(접근성 성명 페이지 안의 연락 수단)은 성명 페이지를 한 번 더 받아야 해 아직 넣지 않았습니다.
+
+## HTML 검사기·성능
+
+[HTMLHint](https://github.com/htmlhint/HTMLHint) 규칙 44개 전체입니다 (`scripts/check_coverage.py` 가 저장소와 다시 대조). Nu HTML Checker 는 `Assertions.java` 의 메시지 251개와 금지 조상 규칙을 사람이 대조했고, 정적으로 값싸게 확인할 수 있는 것을 `meta.http_equiv_invalid` `meta.base_after_resources` `accessibility.invalid_nesting` `accessibility.phrasing_content_violation` `accessibility.form_conformance_errors` `content.invalid_urls` `content.invalid_enum_attrs` `content.time_datetime_invalid` `content.unknown_elements` `content.text_not_nfc` `structured_data.microdata_invalid` `content.section_without_heading` `performance.empty_src` `performance.srcset_sizes_invalid` `performance.preload_invalid` `performance.script_attr_ineffective` `performance.script_json_invalid` 로 넣었습니다. RNC 내용 모델 전체 검증, XHTML 전용 규칙, 암묵 역할 경고(axe 와 같은 이유로 미적용)는 넣지 않았습니다. Chrome DevTools 인사이트와 Lighthouse 에서 빠진 감사는 `performance.excess_preconnect` `performance.preconnect_unused` `performance.preconnect_crossorigin_missing` `performance.third_party_embeds` `performance.legacy_javascript` `performance.unminified_js` `performance.asset_compression` `performance.speculation_rules` `performance.link_header_preload` `performance.server_timing` 로 다룹니다.
+
+| HTMLHint 규칙 | 항목 id | 비고 |
+|---|---|---|
+| alt-require | `content.img_alt_missing` `accessibility.area_alt_missing` | — |
+| attr-no-duplication | `accessibility.markup_errors` | — |
+| doctype-first | `meta.doctype` | — |
+| doctype-html5 | `meta.doctype` | — |
+| frame-title-require | `accessibility.iframe_title_missing` | — |
+| h1-require | `content.h1` | — |
+| head-script-disabled | `performance.render_blocking_scripts` | — |
+| html-lang-require | `meta.html_lang` | — |
+| id-unique | `accessibility.duplicate_ids` | — |
+| input-requires-label | `accessibility.unlabeled_form_controls` | — |
+| link-rel-canonical-require | `meta.canonical` | — |
+| main-require | `accessibility.landmark_main` | — |
+| meta-charset-require | `meta.charset` | — |
+| meta-description-require | `meta.description` | — |
+| meta-viewport-require | `meta.viewport` | — |
+| tag-no-obsolete | `accessibility.obsolete_elements` | — |
+| tag-pair | `accessibility.markup_errors` | — |
+| title-require | `meta.title` | — |
+| button-type-require | `content.button_type_missing` `content.invalid_enum_attrs` | — |
+| form-method-require | `content.form_method_missing` | — |
+| src-not-empty | `performance.empty_src` | — |
+| inline-style-disabled | `performance.inline_style_attrs` | — |
+| inline-script-disabled | `security.inline_event_handlers` `content.pseudo_js_links` | — |
+| id-class-ad-disabled | `content.ad_blocker_class_names` | — |
+| attr-unsafe-chars | `content.attr_unsafe_chars` | — |
+| tagname-specialchars | `content.unknown_elements` | — |
+| script-disabled | `performance.inline_code_bytes` | 정책 토글이라 존재만 보고 |
+| style-disabled | `performance.inline_code_bytes` | 정책 토글이라 존재만 보고 |
+| tags-check | — | 기본 설정이 a·img 에 title 을 요구해 접근성 지침과 충돌 |
+| attr-lowercase | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| attr-sorted | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| attr-value-double-quotes | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| attr-value-single-quotes | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| attr-whitespace | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| attr-no-unnecessary-whitespace | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| attr-value-not-empty | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| attr-value-no-duplication | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| empty-tag-not-self-closed | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| tag-self-close | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| tagname-lowercase | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| space-tab-mixed-disabled | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| spec-char-escape | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| href-abs-or-rel | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
+| id-class-value | — | 해당 없음: 렌더링에 영향 없는 소스 서식 규칙 |
 
 ## 생성형 검색(GEO)
 

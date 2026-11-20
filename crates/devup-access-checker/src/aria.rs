@@ -181,6 +181,10 @@ const PRESENTATIONAL_CHILDREN: &[&str] = &[
     "switch",
     "tab",
 ];
+/// 자식이 표현용인 역할 안에 있으면 의미를 잃는 요소
+const SEMANTIC_CHILDREN: &[&str] = &[
+    "h1", "h2", "h3", "h4", "h5", "h6", "ul", "ol", "table", "nav", "main",
+];
 const LANDMARKS: &[&str] = &[
     "navigation",
     "complementary",
@@ -477,22 +481,7 @@ pub fn extract(doc: &Html, base: &Url) -> AriaFacts {
                     .descendants()
                     .filter_map(ElementRef::wrap)
                     .skip(1)
-                    .any(|d| {
-                        has_attr(&d, "role")
-                            || matches!(
-                                d.value().name(),
-                                "h1" | "h2"
-                                    | "h3"
-                                    | "h4"
-                                    | "h5"
-                                    | "h6"
-                                    | "ul"
-                                    | "ol"
-                                    | "table"
-                                    | "nav"
-                                    | "main"
-                            )
-                    })
+                    .any(|d| has_attr(&d, "role") || SEMANTIC_CHILDREN.contains(&d.value().name()))
             {
                 push(&mut f.presentational_children, tag(r));
             }

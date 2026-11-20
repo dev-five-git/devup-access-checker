@@ -4,6 +4,7 @@
 - axe-core 규칙, Lighthouse 감사, Google 구조화 데이터 갤러리, OWASP 권장 헤더
 - WCAG 2.2 성공 기준, Open Graph 속성, Web App Manifest 멤버, MDN 폐기·비표준 헤더 (대조표)
 - WHATWG HTML 폐기 속성 (spec.rs 의 OBSOLETE_ATTRS), schema.org 타입 (schema_types.rs)
+- Mozilla HTTP Observatory 테스트, webhint hint, HTMLHint 규칙 (대조표)
 
     python scripts/check_coverage.py
 
@@ -119,6 +120,25 @@ flagged = sorted(
 )
 mdn_doc = section(doc, "## MDN 폐기 헤더", "## 네이버")
 results.append(("MDN 폐기·비표준 헤더", len(flagged), [h for h in flagged if f"| {h} |" not in mdn_doc]))
+
+def github_dir(repo: str, path: str) -> list[str]:
+    return [e["name"] for e in json.loads(fetch(f"https://api.github.com/repos/{repo}/contents/{path}"))]
+
+
+obs_tests = sorted(n.removesuffix(".js") for n in github_dir("mdn/mdn-http-observatory", "src/analyzer/tests") if n.endswith(".js"))
+sec_doc = section(doc, "## 보안 스캐너", "## 접근성 검사기")
+results.append(("Observatory 테스트", len(obs_tests), [t for t in obs_tests if f"| {t} |" not in sec_doc]))
+
+hints = sorted(n.removeprefix("hint-") for n in github_dir("webhintio/hint", "packages") if n.startswith("hint-"))
+results.append(("webhint hint", len(hints), [h for h in hints if f"| {h} |" not in sec_doc]))
+
+rules = sorted(
+    n.removesuffix(".ts")
+    for n in github_dir("htmlhint/HTMLHint", "src/core/rules")
+    if n.endswith(".ts") and n != "index.ts"
+)
+hh_doc = section(doc, "## HTML 검사기·성능", "## 생성형")
+results.append(("HTMLHint 규칙", len(rules), [r for r in rules if f"| {r} |" not in hh_doc]))
 
 failed = False
 for name, total, missing in results:
