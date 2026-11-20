@@ -209,6 +209,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `crawling.robots_allows.bingbot` | Bing 크롤러 허용 (Bingbot) |
 | `crawling.robots_allows.yeti` | Naver 크롤러 허용 (Yeti) |
 | `crawling.robots_allows.daumoa` | Daum 크롤러 허용 (Daumoa) |
+| `crawling.robots_allows.applebot` | Apple 검색(Siri·Spotlight) 크롤러 허용 (Applebot) |
 | `geo.llms_txt` | llms.txt |
 | `geo.llms_full_txt` | llms-full.txt |
 | `geo.ai_txt` | ai.txt |
@@ -216,7 +217,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `geo.llms_txt_summary` | llms.txt > 요약 |
 | `geo.llms_txt_sections` | llms.txt ## 섹션 |
 | `geo.llms_txt_links` | llms.txt 링크 목록 |
-| `geo.tdm_reservation` | TDM 예약 (tdmrep.json / 헤더 / 메타) |
+| `geo.tdm_reservation` | TDM 예약 선언 (tdmrep.json / 헤더 / 메타) |
 | `geo.robots_allows.gptbot` | OpenAI 학습 크롤러 허용 (GPTBot) |
 | `geo.robots_allows.oai_searchbot` | ChatGPT 검색 크롤러 허용 (OAI-SearchBot) |
 | `geo.robots_allows.chatgpt_user` | ChatGPT 사용자 요청 크롤러 허용 (ChatGPT-User) |
@@ -231,6 +232,18 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `geo.robots_allows.amazonbot` | Amazon 크롤러 허용 (Amazonbot) |
 | `geo.robots_allows.bytespider` | ByteDance 크롤러 허용 (Bytespider) |
 | `geo.robots_allows.ccbot` | Common Crawl 크롤러 허용 (CCBot) |
+| `geo.robots_allows.google_cloudvertexbot` | Vertex AI 에이전트 크롤러 허용 (Google-CloudVertexBot) |
+| `geo.robots_allows.googleother` | Google 범용(연구) 크롤러 허용 (GoogleOther) |
+| `geo.robots_allows.meta_webindexer` | Meta AI 검색 인용 크롤러 허용 (meta-webindexer) |
+| `geo.robots_allows.oai_adsbot` | ChatGPT 광고 검증 크롤러 허용 (OAI-AdsBot) |
+| `geo.robots_allows.amzn_searchbot` | Amazon 검색 크롤러 허용 (Amzn-SearchBot) |
+| `geo.robots_allows.amzn_user` | Amazon 사용자 요청 크롤러 허용 (Amzn-User) |
+| `geo.robots_allows.mistralai_user` | Mistral 사용자 요청 크롤러 허용 (MistralAI-User) |
+| `geo.robots_allows.mistralai_index` | Mistral 검색 색인 크롤러 허용 (MistralAI-Index) |
+| `geo.robots_allows.mistralai_training` | Mistral 학습 크롤러 허용 (MistralAI-Training) |
+| `geo.robots_allows.duckassistbot` | DuckDuckGo AI 답변 크롤러 허용 (DuckAssistBot) |
+| `geo.robots_allows.ai2bot` | Ai2 학습 크롤러 허용 (AI2Bot) |
+| `geo.robots_allows.webzio_extended` | Webz.io AI 학습 데이터 크롤러 허용 (Webzio-extended) |
 | `geo.ua_access.gptbot` | AI UA 응답 (gptbot) |
 | `geo.ua_access.claudebot` | AI UA 응답 (claudebot) |
 | `geo.ua_access.perplexitybot` | AI UA 응답 (perplexitybot) |
@@ -476,6 +489,18 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `crawling.robots_encoding` | robots.txt UTF-8 인코딩 |
 | `crawling.sitemap_redirected_urls` | sitemap 표본 중 리다이렉트되는 URL |
 | `crawling.indexnow_key_file` | IndexNow 키 파일 |
+| `crawling.robots_content_type` | robots.txt text/plain |
+| `crawling.robots_orphan_rules` | 그룹 밖 Allow/Disallow |
+| `crawling.robots_unreachable` | robots.txt 5xx·네트워크 오류 (전체 차단으로 간주) |
+| `crawling.robots_redirect_hops` | robots.txt 리다이렉트 5회 초과 |
+| `crawling.sitemap_namespace` | sitemap 네임스페이스 |
+| `crawling.sitemap_invalid_priority` | sitemap priority 범위 밖 |
+| `crawling.sitemap_invalid_changefreq` | sitemap changefreq 허용값 밖 |
+| `crawling.sitemap_invalid_lastmod` | sitemap lastmod W3C Datetime 형식 오류 |
+| `crawling.sitemap_unescaped_entities` | sitemap 엔티티 미이스케이프 (&) |
+| `crawling.sitemap_invalid_loc` | sitemap loc 형식 오류 |
+| `crawling.sitemap_out_of_scope` | sitemap 위치 밖 URL |
+| `crawling.sitemap_encoding` | sitemap UTF-8 |
 | `geo.question_headings` | 질문형 헤딩 (h2~h4) |
 | `geo.lists` | 목록 (항목 2개 이상 ul/ol, dl) |
 | `geo.tables` | 표 |
@@ -486,6 +511,19 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `geo.webmcp_script` | WebMCP 명령형 API 사용 흔적 (navigator.modelContext) |
 | `geo.copilot_restrictions` | Copilot 인용 제한 (noarchive·nocache) |
 | `geo.bing_ai_preferences` | Bing AI 학습·그라운딩 선호 표시 |
+| `geo.llms_txt_link_format` | llms.txt 링크 항목 형식 오류 |
+| `geo.llms_txt_extra_headings` | llms.txt 규격 밖 헤딩 |
+| `geo.llms_txt_optional_section` | llms.txt Optional 섹션 |
+| `geo.llms_txt_describedby` | llms.txt 연결 (rel=describedby) |
+| `geo.llms_txt_subpath` | 하위 경로 llms.txt |
+| `geo.content_signals` | Content-Signal (robots.txt) |
+| `geo.content_usage` | AI 사용 선호 (IETF aipref Content-Usage) |
+| `geo.rsl_license` | RSL 라이선스 선언 |
+| `geo.tdm_policy` | TDM 정책 URL (tdm-policy) |
+| `geo.tdm_reservation_invalid` | TDM 예약 값 오류 |
+| `geo.a2a_agent_card` | A2A 에이전트 카드 |
+| `geo.quotations` | 인용문 (blockquote·q) |
+| `geo.statistics` | 수치·통계 표기 |
 | `structured_data.speakable` | speakable 속성 |
 | `meta.canonical_target_noindex` | canonical 대상 페이지 noindex |
 | `meta.canonical_target_mismatch` | canonical 대상이 2xx 아님 또는 다른 canonical |

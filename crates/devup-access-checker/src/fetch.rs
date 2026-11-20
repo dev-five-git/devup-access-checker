@@ -742,10 +742,11 @@ pub async fn head_length(client: &Client, url: &Url) -> Result<(u16, Option<u64>
 }
 
 /// AI 크롤러 UA 요청: (상태, 최종 URL, 챌린지 공급자). 본문은 200KB 까지만 본다.
-pub async fn probe_ua(
-    client: &Client,
-    url: &Url,
-) -> Result<(u16, Url, Option<&'static str>), String> {
+/// (상태 코드, 최종 URL, 봇 차단 공급자, `<title>`)
+pub type UaProbe = (u16, Url, Option<&'static str>, Option<String>);
+
+/// 지정한 User-Agent 로 페이지를 받아 상태·차단 여부·제목을 본다 (제목은 일반 요청과 비교해 클로킹 단서로 쓴다).
+pub async fn probe_ua(client: &Client, url: &Url) -> Result<UaProbe, String> {
     let mut res = send_get(client, url.as_str())
         .await
         .map_err(describe_owned)?;
@@ -758,8 +759,19 @@ pub async fn probe_ua(
             break;
         }
     }
-    let challenge = crate::signals::bot_challenge(&String::from_utf8_lossy(&buf));
-    Ok((status, final_url, challenge))
+    let text = String::from_utf8_lossy(&buf);
+    let challenge = crate::signals::bot_challenge(&text);
+    let title = scraper::Html::parse_document(&text)
+        .select(&scraper::Selector::parse("title").expect("valid selector"))
+        .next()
+        .map(|t| {
+            t.text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+    Ok((status, final_url, challenge, title))
 }
 
 #[cfg(test)]
@@ -957,7 +969,7 @@ mod tests {
             ResponseTemplate::new(200).set_body_string("d".repeat(300_000)),
         )
         .await;
-        let (status, _, challenge) = probe_ua(&client(), &url).await.unwrap();
+        let (status, _, challenge, _) = probe_ua(&client(), &url).await.unwrap();
         assert_eq!((status, challenge), (200, None));
     }
 

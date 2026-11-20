@@ -20,6 +20,7 @@ pub const SEARCH_CRAWLERS: &[(&str, &str, &str)] = &[
     ("bingbot", "Bingbot", "Bing"),
     ("yeti", "Yeti", "Naver"),
     ("daumoa", "Daumoa", "Daum"),
+    ("applebot", "Applebot", "Apple 검색(Siri·Spotlight)"),
 ];
 
 /// 생성형 AI 크롤러 (robots.txt 허용 여부 점검 대상).
@@ -42,6 +43,26 @@ pub const AI_CRAWLERS: &[(&str, &str, &str)] = &[
     ("amazonbot", "Amazonbot", "Amazon"),
     ("bytespider", "Bytespider", "ByteDance"),
     ("ccbot", "CCBot", "Common Crawl"),
+    (
+        "google_cloudvertexbot",
+        "Google-CloudVertexBot",
+        "Vertex AI 에이전트",
+    ),
+    ("googleother", "GoogleOther", "Google 범용(연구)"),
+    ("meta_webindexer", "meta-webindexer", "Meta AI 검색 인용"),
+    ("oai_adsbot", "OAI-AdsBot", "ChatGPT 광고 검증"),
+    ("amzn_searchbot", "Amzn-SearchBot", "Amazon 검색"),
+    ("amzn_user", "Amzn-User", "Amazon 사용자 요청"),
+    ("mistralai_user", "MistralAI-User", "Mistral 사용자 요청"),
+    ("mistralai_index", "MistralAI-Index", "Mistral 검색 색인"),
+    ("mistralai_training", "MistralAI-Training", "Mistral 학습"),
+    ("duckassistbot", "DuckAssistBot", "DuckDuckGo AI 답변"),
+    ("ai2bot", "AI2Bot", "Ai2 학습"),
+    (
+        "webzio_extended",
+        "Webzio-extended",
+        "Webz.io AI 학습 데이터",
+    ),
 ];
 
 /// 실제 User-Agent 로 페이지를 요청해 볼 검색엔진 크롤러 (가이드에 적힌 UA 문자열)
@@ -219,6 +240,12 @@ pub struct ImageInfo {
 /// 검색엔진 가이드 대조로 추가 요청한 결과.
 #[derive(Debug, Default)]
 pub struct SearchProbes {
+    /// 페이지 경로의 디렉터리 llms.txt (예: /docs/llms.txt). None = 루트 페이지
+    pub llms_subpath: Option<FileProbe>,
+    /// `/.well-known/agent-card.json` (A2A). None = 수행 안 함
+    pub agent_card: Option<FileProbe>,
+    /// robots.txt 요청의 리다이렉트 체인. None = 수행 안 함
+    pub robots_chain: Option<Result<Vec<Hop>, String>>,
     /// 첫 RSS/Atom 피드 본문. None = 피드 링크 없음 또는 수행 안 함
     pub feed: Option<FileProbe>,
     /// `/BingSiteAuth.xml`. None = 수행 안 함
@@ -308,10 +335,7 @@ pub struct Inputs<'a> {
 }
 
 /// (AI 크롤러 id, 해당 UA 로 요청한 결과)
-pub type AiUaResult = (
-    &'static str,
-    Result<(u16, Url, Option<&'static str>), String>,
-);
+pub type AiUaResult = (&'static str, Result<crate::fetch::UaProbe, String>);
 
 struct Out(Vec<Check>);
 
@@ -1343,7 +1367,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     o.push(
         "geo.tdm_reservation",
         Geo,
-        "TDM 예약 (tdmrep.json / 헤더 / 메타)",
+        "TDM 예약 선언 (tdmrep.json / 헤더 / 메타)",
         if wk.tdmrep.error.is_some() && tdm_header.is_none() && tdm_meta.is_none() {
             Presence::Unknown
         } else {
@@ -1377,12 +1401,16 @@ pub fn build(i: &Inputs) -> Vec<Check> {
             )
         };
         match result {
-            Ok((status, final_url, challenge)) => o.push(
+            Ok((status, final_url, challenge, title)) => o.push(
                 item,
                 cat,
                 label,
                 Presence::from_bool((200..300).contains(status) && challenge.is_none()),
-                Some(json!({ "statusCode": status, "url": final_url.as_str(), "challenge": challenge })),
+                Some(json!({
+                    "statusCode": status, "url": final_url.as_str(), "challenge": challenge, "title": title,
+                    // 일반 요청과 제목이 다르면 UA 별로 다른 내용을 주는 것(클로킹)일 수 있다
+                    "sameTitleAsPage": title.as_deref().map(str::trim) == i.facts.title.as_deref().map(str::trim),
+                })),
                 Some("User-Agent 문자열만 바꾼 요청 결과. 크롤러 IP 검증을 하는 방화벽에서는 실제 크롤러와 결과가 다를 수 있음".into()),
             ),
             Err(e) => o.push(item, cat, label, Presence::Unknown, None, Some(format!("요청 실패: {e}"))),
@@ -1510,6 +1538,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     spec_checks(&mut o, i);
     search_checks(&mut o, i, &robots);
     search_network_checks(&mut o, i, &robots);
+    geo_spec_checks(&mut o, i, &robots);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -2918,6 +2947,74 @@ fn more_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
             "sitemap 한도 초과 (50MB 또는 5만 URL)",
             Presence::from_bool(size > 50 * 1024 * 1024 || entries > 50_000),
             Some(json!({ "url": sm.url, "bytes": size, "entries": entries })),
+            None,
+        );
+        let sm_url = Url::parse(&sm.url).unwrap_or_else(|_| page.final_url.clone());
+        let issues = sitemap::validate(sm.body.as_deref().unwrap_or_default(), &sm_url);
+        let problem = |v: &[String]| {
+            (
+                Presence::from_bool(!v.is_empty()),
+                (!v.is_empty()).then(|| json!(v)),
+            )
+        };
+        for (id, label, (p, v)) in [
+            (
+                "crawling.sitemap_invalid_priority",
+                "sitemap priority 범위 밖",
+                problem(&issues.invalid_priority),
+            ),
+            (
+                "crawling.sitemap_invalid_changefreq",
+                "sitemap changefreq 허용값 밖",
+                problem(&issues.invalid_changefreq),
+            ),
+            (
+                "crawling.sitemap_invalid_lastmod",
+                "sitemap lastmod W3C Datetime 형식 오류",
+                problem(&issues.invalid_lastmod),
+            ),
+            (
+                "crawling.sitemap_invalid_loc",
+                "sitemap loc 형식 오류",
+                problem(&issues.invalid_loc),
+            ),
+            (
+                "crawling.sitemap_out_of_scope",
+                "sitemap 위치 밖 URL",
+                problem(&issues.out_of_scope),
+            ),
+        ] {
+            o.push(
+                id,
+                Crawling,
+                label,
+                p,
+                v,
+                Some("sitemaps.org 프로토콜".into()),
+            );
+        }
+        o.push(
+            "crawling.sitemap_namespace",
+            Crawling,
+            "sitemap 네임스페이스",
+            Presence::from_bool(issues.namespace),
+            None,
+            Some("http://www.sitemaps.org/schemas/sitemap/0.9".into()),
+        );
+        o.push(
+            "crawling.sitemap_unescaped_entities",
+            Crawling,
+            "sitemap 엔티티 미이스케이프 (&)",
+            Presence::from_bool(issues.unescaped_ampersands > 0),
+            Some(json!(issues.unescaped_ampersands)),
+            None,
+        );
+        o.push(
+            "crawling.sitemap_encoding",
+            Crawling,
+            "sitemap UTF-8",
+            Presence::from_bool(sm.utf8),
+            None,
             None,
         );
         o.push(
@@ -5354,6 +5451,350 @@ fn search_network_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String
     }
 }
 
+/// HTTP `Link` 헤더에서 rel(과 선택적으로 type)이 맞는 대상 URL.
+fn link_header_targets(headers: &HeaderMap, rel: &str, typ: Option<&str>) -> Vec<String> {
+    let raw = header(headers, "link").unwrap_or_default();
+    raw.split(',')
+        .filter_map(|part| {
+            let mut it = part.split(';');
+            let target = it
+                .next()?
+                .trim()
+                .trim_start_matches('<')
+                .trim_end_matches('>')
+                .to_string();
+            let params: Vec<(String, String)> = it
+                .filter_map(|p| {
+                    let (k, v) = p.split_once('=')?;
+                    Some((
+                        k.trim().to_ascii_lowercase(),
+                        v.trim().trim_matches('"').to_ascii_lowercase(),
+                    ))
+                })
+                .collect();
+            let has = |k: &str, want: &str| {
+                params
+                    .iter()
+                    .any(|(pk, pv)| pk == k && pv.split_whitespace().any(|x| x == want))
+            };
+            (has("rel", rel) && typ.is_none_or(|t| has("type", t))).then_some(target)
+        })
+        .collect()
+}
+
+/// A2A 에이전트 카드 필수 필드 (a2a-protocol.org 명세 §8.2).
+const AGENT_CARD_FIELDS: &[&str] = &[
+    "name",
+    "description",
+    "version",
+    "capabilities",
+    "skills",
+    "supportedInterfaces",
+    "defaultInputModes",
+    "defaultOutputModes",
+];
+
+/// AI·프로토콜 명세(llms.txt, IETF aipref, Content Signals, RSL, TDMRep, A2A, RFC 9309, sitemaps.org, GEO 논문) 대조 항목.
+fn geo_spec_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
+    use Category::*;
+    let f = i.facts;
+    let s = &f.search;
+    let sp = &i.extended.search;
+    let headers = &i.page.headers;
+    let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
+
+    // ===== llms.txt =====
+    let llms = i
+        .llms
+        .exists
+        .then(|| llms::parse(i.llms.body.as_deref().unwrap_or_default()));
+    let na = |b: Option<bool>| b.map_or(Presence::NotApplicable, Presence::from_bool);
+    o.push(
+        "geo.llms_txt_link_format",
+        Geo,
+        "llms.txt 링크 항목 형식 오류",
+        na(llms.as_ref().map(|d| !d.malformed_items.is_empty())),
+        llms.as_ref().and_then(|d| list(&d.malformed_items)),
+        Some("llmstxt.org: 섹션 목록은 `- [이름](url): 설명`".into()),
+    );
+    o.push(
+        "geo.llms_txt_extra_headings",
+        Geo,
+        "llms.txt 규격 밖 헤딩",
+        na(llms.as_ref().map(|d| !d.extra_headings.is_empty())),
+        llms.as_ref().and_then(|d| list(&d.extra_headings)),
+        None,
+    );
+    o.push(
+        "geo.llms_txt_optional_section",
+        Geo,
+        "llms.txt Optional 섹션",
+        na(llms.as_ref().map(|d| d.optional_section)),
+        None,
+        None,
+    );
+    let mut described: Vec<String> = s.llms_describedby.clone();
+    described.extend(
+        link_header_targets(headers, "describedby", None)
+            .into_iter()
+            .filter(|u| {
+                u.split(['?', '#'])
+                    .next()
+                    .unwrap_or_default()
+                    .ends_with("llms.txt")
+            }),
+    );
+    o.push(
+        "geo.llms_txt_describedby",
+        Geo,
+        "llms.txt 연결 (rel=describedby)",
+        Presence::from_bool(!described.is_empty()),
+        list(&described),
+        Some("llmstxt.org: HTML link 또는 Link 헤더의 rel=describedby".into()),
+    );
+    let (p, n) = match &sp.llms_subpath {
+        None => (Presence::NotApplicable, None),
+        Some(p) if p.error.is_some() => (Presence::Unknown, p.error.clone()),
+        Some(p) => (Presence::from_bool(p.exists), None),
+    };
+    o.push(
+        "geo.llms_txt_subpath",
+        Geo,
+        "하위 경로 llms.txt",
+        p,
+        sp.llms_subpath.as_ref().map(file_value),
+        n,
+    );
+
+    // ===== AI 사용 선호·라이선스 =====
+    let parsed = robots.as_ref().ok().filter(|_| i.robots.exists);
+    let pairs = |v: &[(String, String)]| {
+        json!(
+            v.iter()
+                .map(|(a, x)| json!({ "userAgents": a, "value": x }))
+                .collect::<Vec<_>>()
+        )
+    };
+    o.push(
+        "geo.content_signals",
+        Geo,
+        "Content-Signal (robots.txt)",
+        match (robots, parsed) {
+            (Err(_), _) => Presence::Unknown,
+            (_, None) => Presence::NotApplicable,
+            (_, Some(r)) => Presence::from_bool(!r.content_signals.is_empty()),
+        },
+        parsed
+            .filter(|r| !r.content_signals.is_empty())
+            .map(|r| pairs(&r.content_signals)),
+        Some("search·ai-input·ai-train = yes|no".into()),
+    );
+    let usage_header = header(headers, "content-usage");
+    let usage_robots = parsed.map(|r| r.content_usage.clone()).unwrap_or_default();
+    o.push(
+        "geo.content_usage",
+        Geo,
+        "AI 사용 선호 (IETF aipref Content-Usage)",
+        if usage_header.is_some() || !usage_robots.is_empty() {
+            Presence::Present
+        } else if robots.is_err() {
+            Presence::Unknown
+        } else {
+            Presence::Missing
+        },
+        Some(json!({ "header": usage_header, "robots": pairs(&usage_robots) })),
+        Some("train-ai·ai-use·search = y|n".into()),
+    );
+    let mut rsl: Vec<String> = parsed.map(|r| r.licenses.clone()).unwrap_or_default();
+    rsl.extend(link_header_targets(
+        headers,
+        "license",
+        Some("application/rsl+xml"),
+    ));
+    rsl.extend(s.rsl_links.iter().cloned());
+    if s.rsl_script {
+        rsl.push("<script type=\"application/rsl+xml\">".into());
+    }
+    o.push(
+        "geo.rsl_license",
+        Geo,
+        "RSL 라이선스 선언",
+        Presence::from_bool(!rsl.is_empty()),
+        list(&rsl),
+        Some("robots.txt License·Link 헤더·link rel=license·인라인 RSL".into()),
+    );
+    let wk = &i.well_known;
+    let tdm_header = header(headers, "tdm-reservation");
+    let tdm_meta = f.meta("tdm-reservation").map(str::to_string);
+    let tdm_json: Option<Value> = wk
+        .tdmrep
+        .exists
+        .then(|| serde_json::from_str(wk.tdmrep.body.as_deref().unwrap_or_default()).ok())
+        .flatten();
+    let declared = tdm_header.is_some() || tdm_meta.is_some() || wk.tdmrep.exists;
+    let policy: Vec<String> = [
+        header(headers, "tdm-policy"),
+        f.meta("tdm-policy").map(str::to_string),
+    ]
+    .into_iter()
+    .flatten()
+    .chain(
+        tdm_json
+            .iter()
+            .filter_map(Value::as_array)
+            .flatten()
+            .filter_map(|e| {
+                e.get("tdm-policy")
+                    .and_then(Value::as_str)
+                    .map(str::to_string)
+            }),
+    )
+    .collect();
+    o.push(
+        "geo.tdm_policy",
+        Geo,
+        "TDM 정책 URL (tdm-policy)",
+        if declared {
+            Presence::from_bool(!policy.is_empty())
+        } else {
+            Presence::NotApplicable
+        },
+        list(&policy),
+        Some("W3C TDMRep".into()),
+    );
+    let bit = |v: &str| matches!(v.trim(), "0" | "1");
+    let mut bad: Vec<String> = [tdm_header.clone(), tdm_meta.clone()]
+        .into_iter()
+        .flatten()
+        .filter(|v| !bit(v))
+        .collect();
+    if wk.tdmrep.exists {
+        let ok = tdm_json
+            .as_ref()
+            .and_then(Value::as_array)
+            .is_some_and(|a| {
+                a.iter().all(|e| {
+                    e.get("location").is_some_and(Value::is_string)
+                        && e.get("tdm-reservation")
+                            .and_then(Value::as_u64)
+                            .is_some_and(|n| n <= 1)
+                })
+            });
+        if !ok {
+            bad.push("tdmrep.json".into());
+        }
+    }
+    o.push(
+        "geo.tdm_reservation_invalid",
+        Geo,
+        "TDM 예약 값 오류",
+        if declared {
+            Presence::from_bool(!bad.is_empty())
+        } else {
+            Presence::NotApplicable
+        },
+        list(&bad),
+        Some(
+            "tdm-reservation 은 0 또는 1, tdmrep.json 은 location·tdm-reservation 객체 배열".into(),
+        ),
+    );
+    let (p, v, n) = match &sp.agent_card {
+        None => (Presence::NotApplicable, None, None),
+        Some(c) if c.error.is_some() => (Presence::Unknown, None, c.error.clone()),
+        Some(c) if !c.exists => (Presence::Missing, None, None),
+        Some(c) => {
+            let card: Value =
+                serde_json::from_str(c.body.as_deref().unwrap_or_default()).unwrap_or_default();
+            let missing: Vec<&str> = AGENT_CARD_FIELDS
+                .iter()
+                .copied()
+                .filter(|k| card.get(k).is_none())
+                .collect();
+            (
+                Presence::from_bool(missing.is_empty()),
+                Some(json!({ "url": c.url, "missing": missing })),
+                None,
+            )
+        }
+    };
+    o.push("geo.a2a_agent_card", Geo, "A2A 에이전트 카드", p, v, n);
+
+    // ===== RFC 9309 =====
+    let rb = i.robots;
+    o.push(
+        "crawling.robots_content_type",
+        Crawling,
+        "robots.txt text/plain",
+        if rb.exists {
+            Presence::from_bool(
+                rb.content_type
+                    .as_deref()
+                    .unwrap_or_default()
+                    .trim()
+                    .to_ascii_lowercase()
+                    .starts_with("text/plain"),
+            )
+        } else {
+            Presence::NotApplicable
+        },
+        rb.content_type.clone().map(Value::from),
+        Some("RFC 9309 §2.3".into()),
+    );
+    o.push(
+        "crawling.robots_orphan_rules",
+        Crawling,
+        "그룹 밖 Allow/Disallow",
+        parsed.map_or(Presence::NotApplicable, |r| {
+            Presence::from_bool(r.orphan_rules > 0)
+        }),
+        parsed.map(|r| json!(r.orphan_rules)),
+        Some("RFC 9309 §2.2.2: User-agent 앞의 규칙은 무시됨".into()),
+    );
+    let unreachable = rb.error.is_some() || rb.status_code.is_some_and(|c| c >= 500);
+    o.push(
+        "crawling.robots_unreachable",
+        Crawling,
+        "robots.txt 5xx·네트워크 오류 (전체 차단으로 간주)",
+        Presence::from_bool(unreachable),
+        Some(json!({ "statusCode": rb.status_code, "error": rb.error })),
+        Some("RFC 9309 §2.3.1.4: 접근 불가면 크롤러는 전체 차단으로 가정".into()),
+    );
+    let (p, v, n) = match &sp.robots_chain {
+        None => (Presence::NotApplicable, None, None),
+        Some(Err(e)) => (Presence::Unknown, None, Some(e.clone())),
+        Some(Ok(h)) => {
+            let hops = h.len().saturating_sub(1);
+            (Presence::from_bool(hops > 5), Some(json!(hops)), None)
+        }
+    };
+    o.push(
+        "crawling.robots_redirect_hops",
+        Crawling,
+        "robots.txt 리다이렉트 5회 초과",
+        p,
+        v,
+        n.or_else(|| Some("RFC 9309 §2.3.1.2".into())),
+    );
+
+    // ===== GEO 논문 신호 =====
+    o.push(
+        "geo.quotations",
+        Geo,
+        "인용문 (blockquote·q)",
+        Presence::from_bool(s.quotations > 0),
+        Some(json!(s.quotations)),
+        Some("GEO 논문(Aggarwal 외, KDD 2024): 인용문 추가".into()),
+    );
+    o.push(
+        "geo.statistics",
+        Geo,
+        "수치·통계 표기",
+        Presence::from_bool(s.statistics > 0),
+        Some(json!(s.statistics)),
+        Some("숫자+단위 표기 수 (휴리스틱). GEO 논문: 통계 추가".into()),
+    );
+}
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -5644,6 +6085,7 @@ mod tests {
         facts: PageFacts,
         sitemap: FileProbe,
         robots: FileProbe,
+        llms: FileProbe,
         not_found: Result<(u16, String), String>,
         http_version: Option<Result<(u16, Url), String>>,
         content_encoding: Option<Result<Option<String>, String>>,
@@ -5666,6 +6108,7 @@ mod tests {
                 facts,
                 sitemap: failed("https://a.com/sitemap.xml"),
                 robots: failed("https://a.com/robots.txt"),
+                llms: failed("l"),
                 not_found: err(),
                 http_version: Some(err()),
                 content_encoding: Some(err()),
@@ -5721,7 +6164,7 @@ mod tests {
                 facts: &self.facts,
                 sitemap: &self.sitemap,
                 robots: &self.robots,
-                llms: &failed("l"),
+                llms: &self.llms,
                 llms_full: &failed("lf"),
                 ai_txt: &failed("ai"),
                 not_found: &self.not_found,
@@ -6788,6 +7231,9 @@ mod tests {
             Presence::NotApplicable
         );
         fx.extended.search = SearchProbes {
+            llms_subpath: None,
+            agent_card: None,
+            robots_chain: None,
             feed: Some(failed("https://a.com/feed")),
             bing_site_auth: Some(failed("https://a.com/BingSiteAuth.xml")),
             not_found_chain: Some(err()),
@@ -6833,6 +7279,9 @@ mod tests {
         );
         big.size = Some(11 * 1024 * 1024);
         fx.extended.search = SearchProbes {
+            llms_subpath: None,
+            agent_card: None,
+            robots_chain: None,
             feed: Some(feed),
             bing_site_auth: Some(found("https://a.com/BingSiteAuth.xml", "<users></users>")),
             not_found_chain: Some(Ok(vec![
@@ -6920,6 +7369,181 @@ mod tests {
         assert_eq!(
             p(&c, "transport.redirect_chain_robots_blocked"),
             Presence::NotApplicable
+        );
+    }
+
+    #[test]
+    fn geo_and_protocol_spec_items() {
+        let mut fx = Fx::failing();
+        let p = |c: &[Check], id: &str| get(c, id).presence;
+        // 요청 실패·대상 없음
+        let c = fx.run();
+        for (id, want) in [
+            ("geo.llms_txt_link_format", Presence::NotApplicable),
+            ("geo.llms_txt_describedby", Presence::Missing),
+            ("geo.llms_txt_subpath", Presence::NotApplicable),
+            ("geo.content_signals", Presence::Unknown),
+            ("geo.content_usage", Presence::Unknown),
+            ("geo.rsl_license", Presence::Missing),
+            ("geo.tdm_policy", Presence::NotApplicable),
+            ("geo.tdm_reservation_invalid", Presence::NotApplicable),
+            ("geo.a2a_agent_card", Presence::NotApplicable),
+            ("crawling.robots_content_type", Presence::NotApplicable),
+            ("crawling.robots_orphan_rules", Presence::NotApplicable),
+            ("crawling.robots_unreachable", Presence::Present),
+            ("crawling.robots_redirect_hops", Presence::NotApplicable),
+            ("geo.quotations", Presence::Missing),
+        ] {
+            assert_eq!(p(&c, id), want, "{id}");
+        }
+
+        // 모두 갖춘 경우
+        let html = r#"<html><head><link rel="describedby" href="/llms.txt"><meta name="tdm-reservation" content="1">
+<meta name="tdm-policy" content="https://a.com/policy.json"><script type="application/rsl+xml"><rsl/></script></head><body><blockquote>인용</blockquote><p>30% 증가</p></body></html>"#;
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        fx.page
+            .headers
+            .insert("content-usage", "train-ai=n".parse().unwrap());
+        fx.page.headers.insert(
+            "link",
+            r#"</l.xml>; rel="license"; type="application/rsl+xml", </docs/llms.txt>; rel=describedby, <x>"#.parse().unwrap(),
+        );
+        fx.page
+            .headers
+            .insert("tdm-reservation", "1".parse().unwrap());
+        let mut robots = found(
+            "https://a.com/robots.txt",
+            "Disallow: /x\nUser-agent: *\nContent-Signal: ai-train=no\nContent-Usage: train-ai=n\nLicense: https://a.com/l.xml\nAllow: /\n",
+        );
+        robots.content_type = Some("text/plain; charset=utf-8".into());
+        fx.robots = robots;
+        fx.llms = found(
+            "https://a.com/llms.txt",
+            "# A\n### x\n## Docs\n- bad\n## Optional\n- [a](https://a.com)\n",
+        );
+        fx.well_known.tdmrep = found(
+            "https://a.com/.well-known/tdmrep.json",
+            r#"[{"location": "/", "tdm-reservation": 1, "tdm-policy": "https://a.com/p.json"}]"#,
+        );
+        fx.extended.search.llms_subpath = Some(found("https://a.com/docs/llms.txt", "# Docs"));
+        fx.extended.search.agent_card = Some(found(
+            "https://a.com/.well-known/agent-card.json",
+            r#"{"name":"a","description":"d","version":"1","capabilities":{},"skills":[],"supportedInterfaces":[],
+"defaultInputModes":[],"defaultOutputModes":[]}"#,
+        ));
+        let hops = |n: usize| {
+            (0..=n)
+                .map(|k| Hop {
+                    url: format!("https://a.com/{k}"),
+                    status: 301,
+                })
+                .collect::<Vec<_>>()
+        };
+        fx.extended.search.robots_chain = Some(Ok(hops(6)));
+        let c = fx.run();
+        for id in [
+            "geo.llms_txt_link_format",
+            "geo.llms_txt_extra_headings",
+            "geo.llms_txt_optional_section",
+            "geo.llms_txt_describedby",
+            "geo.llms_txt_subpath",
+            "geo.content_signals",
+            "geo.content_usage",
+            "geo.rsl_license",
+            "geo.tdm_policy",
+            "geo.a2a_agent_card",
+            "crawling.robots_content_type",
+            "crawling.robots_orphan_rules",
+            "crawling.robots_redirect_hops",
+            "geo.quotations",
+            "geo.statistics",
+        ] {
+            assert_eq!(p(&c, id), Presence::Present, "{id}");
+        }
+        assert_eq!(p(&c, "geo.tdm_reservation_invalid"), Presence::Missing);
+        assert_eq!(p(&c, "crawling.robots_unreachable"), Presence::Missing);
+        assert_eq!(
+            get(&c, "geo.llms_txt_describedby").value,
+            Some(json!(["/llms.txt", "/docs/llms.txt"]))
+        );
+
+        // 값 오류·불충족
+        fx.facts = crate::html::extract("<html><body></body></html>", &fx.page.final_url);
+        fx.page.headers.clear();
+        fx.page
+            .headers
+            .insert("tdm-reservation", "yes".parse().unwrap());
+        fx.robots = found("https://a.com/robots.txt", "User-agent: *\nAllow: /\n");
+        fx.well_known.tdmrep = found(
+            "https://a.com/.well-known/tdmrep.json",
+            r#"[{"location": "/", "tdm-reservation": 2}]"#,
+        );
+        fx.extended.search.llms_subpath = Some(failed("https://a.com/docs/llms.txt"));
+        fx.extended.search.agent_card = Some(found(
+            "https://a.com/.well-known/agent-card.json",
+            r#"{"name":"a"}"#,
+        ));
+        fx.extended.search.robots_chain = Some(err());
+        let c = fx.run();
+        for (id, want) in [
+            ("geo.content_signals", Presence::Missing),
+            ("geo.content_usage", Presence::Missing),
+            ("geo.tdm_policy", Presence::Missing),
+            ("geo.tdm_reservation_invalid", Presence::Present),
+            ("geo.a2a_agent_card", Presence::Missing),
+            ("geo.llms_txt_subpath", Presence::Unknown),
+            ("crawling.robots_redirect_hops", Presence::Unknown),
+            ("crawling.robots_content_type", Presence::Missing),
+            ("crawling.robots_orphan_rules", Presence::Missing),
+        ] {
+            assert_eq!(p(&c, id), want, "{id}");
+        }
+        assert_eq!(
+            get(&c, "geo.tdm_reservation_invalid").value,
+            Some(json!(["yes", "tdmrep.json"]))
+        );
+        fx.extended.search.agent_card = Some(failed("https://a.com/.well-known/agent-card.json"));
+        fx.extended.search.robots_chain = Some(Ok(hops(1)));
+        fx.robots = FileProbe {
+            status_code: Some(503),
+            ..Default::default()
+        };
+        let c = fx.run();
+        assert_eq!(p(&c, "geo.a2a_agent_card"), Presence::Unknown);
+        assert_eq!(p(&c, "crawling.robots_redirect_hops"), Presence::Missing);
+        assert_eq!(p(&c, "crawling.robots_unreachable"), Presence::Present);
+        fx.extended.search.agent_card = Some(FileProbe {
+            status_code: Some(404),
+            ..Default::default()
+        });
+        let c = fx.run();
+        assert_eq!(p(&c, "geo.a2a_agent_card"), Presence::Missing);
+    }
+
+    #[test]
+    fn sitemap_protocol_items() {
+        let mut fx = Fx::failing();
+        fx.sitemap = found(
+            "https://a.com/sitemap.xml",
+            "<urlset xmlns=\"http://www.sitemaps.org/schemas/sitemap/0.9\"><url><loc>https://a.com/a?x=1&y=2</loc>\
+             <priority>2</priority><changefreq>often</changefreq><lastmod>어제</lastmod></url><url><loc>/rel</loc></url></urlset>",
+        );
+        fx.sitemap.utf8 = true;
+        let c = fx.run();
+        for id in [
+            "crawling.sitemap_namespace",
+            "crawling.sitemap_invalid_priority",
+            "crawling.sitemap_invalid_changefreq",
+            "crawling.sitemap_invalid_lastmod",
+            "crawling.sitemap_unescaped_entities",
+            "crawling.sitemap_invalid_loc",
+            "crawling.sitemap_encoding",
+        ] {
+            assert_eq!(get(&c, id).presence, Presence::Present, "{id}");
+        }
+        assert_eq!(
+            get(&c, "crawling.sitemap_out_of_scope").presence,
+            Presence::Missing
         );
     }
 }

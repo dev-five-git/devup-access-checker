@@ -737,9 +737,33 @@ impl Checker {
                 let url = at(&format!("/{key}.txt"));
                 Some((key, Some(fetch::probe_file(&probe, &url, PlainText).await)))
             };
-            let (feed, bing, not_found_chain, indexnow) =
-                tokio::join!(feed, bing, not_found_chain, indexnow);
+            let llms_subpath = async {
+                let path = base.path();
+                let dir = &path[..=path.rfind('/').unwrap_or(0)];
+                if dir == "/" {
+                    return None;
+                }
+                Some(fetch::probe_file(&probe, &at(&format!("{dir}llms.txt")), PlainText).await)
+            };
+            let card_url = at("/.well-known/agent-card.json");
+            let agent_card = fetch::probe_file(&probe, &card_url, Json);
+            let robots_chain = async {
+                if !opts.check_transport {
+                    return None;
+                }
+                Some(
+                    fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, robots_url, 6)
+                        .await,
+                )
+            };
+            let ((feed, bing, not_found_chain, indexnow), (llms_subpath, agent_card, robots_chain)) = tokio::join!(
+                async { tokio::join!(feed, bing, not_found_chain, indexnow) },
+                async { tokio::join!(llms_subpath, agent_card, robots_chain) },
+            );
             checks::SearchProbes {
+                llms_subpath,
+                agent_card: Some(agent_card),
+                robots_chain,
                 feed,
                 bing_site_auth: Some(bing),
                 not_found_chain,

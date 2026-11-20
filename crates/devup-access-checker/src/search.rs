@@ -12,6 +12,9 @@ fn sel(s: &str) -> Selector {
 }
 
 static ALL: LazyLock<Selector> = LazyLock::new(|| sel("*"));
+static STAT: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"\d[\d,]*(?:\.\d+)?\s?(?:%|퍼센트|배|명|개|건|원|달러|억|만|조|kg|km|ms|초|분|시간|년|USD|\$)").unwrap()
+});
 static PSEUDO_CALL: LazyLock<Regex> =
     LazyLock::new(|| Regex::new(r"^[A-Za-z_$][\w$.]*\s*\(.*\)\s*;?$").unwrap());
 static GENERIC_NAME: LazyLock<Regex> = LazyLock::new(|| {
@@ -96,6 +99,16 @@ pub struct SearchFacts {
     pub og_image_socialonly: bool,
     /// `[data-snippet]` 요소 수 (Bing)
     pub data_snippet: usize,
+    /// `<blockquote>`·`<q>` 수 (GEO 논문: 인용문 추가)
+    pub quotations: usize,
+    /// 본문의 숫자+단위 표기 수 (GEO 논문: 통계 추가)
+    pub statistics: usize,
+    /// llms.txt 를 가리키는 `<link rel="describedby">`
+    pub llms_describedby: Vec<String>,
+    /// RSL 라이선스 링크 (`<link rel="license" type="application/rsl+xml">`)
+    pub rsl_links: Vec<String>,
+    /// `<script type="application/rsl+xml">`
+    pub rsl_script: bool,
 }
 
 fn push(v: &mut Vec<String>, s: &str) {
@@ -234,6 +247,37 @@ pub fn extract(doc: &Html, base: &Url) -> SearchFacts {
             }
         }
         f.data_snippet += usize::from(e.attr("data-snippet").is_some());
+        f.quotations += usize::from(matches!(name, "blockquote" | "q"));
+        let typ = get("type").unwrap_or_default().to_ascii_lowercase();
+        if name == "link" && tokens.contains(&"describedby") {
+            let href = get("href").unwrap_or_default();
+            if href
+                .split(['?', '#'])
+                .next()
+                .unwrap_or_default()
+                .ends_with("llms.txt")
+            {
+                push(&mut f.llms_describedby, href);
+            }
+        }
+        if name == "link" && tokens.contains(&"license") && typ == "application/rsl+xml" {
+            push(&mut f.rsl_links, get("href").unwrap_or_default());
+        }
+        f.rsl_script |= name == "script" && typ == "application/rsl+xml";
+    }
+    if let Some(body) = doc.select(&sel("body")).next() {
+        for node in body.descendants() {
+            if let Some(t) = node.value().as_text()
+                && !node.ancestors().filter_map(ElementRef::wrap).any(|a| {
+                    matches!(
+                        a.value().name(),
+                        "script" | "style" | "noscript" | "template"
+                    )
+                })
+            {
+                f.statistics += STAT.find_iter(t).count();
+            }
+        }
     }
     f
 }
@@ -298,6 +342,9 @@ static CONTENT: LazyLock<Regex> =
 static RSS_LINK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r"(?is)<link>\s*(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?\s*</link>").unwrap()
 });
+static GUID: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?is)<guid(\s[^>]*)?>\s*(?:<!\[CDATA\[)?\s*(.*?)\s*(?:\]\]>)?\s*</guid>").unwrap()
+});
 static ATOM_LINK: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)<(?:atom:)?link\b[^>]*\bhref\s*=\s*["']([^"']*)["']"#).unwrap()
 });
@@ -311,7 +358,7 @@ pub struct FeedFacts {
     pub items: usize,
     /// item·entry 수 중 본문(content:encoded·content)이 있는 것
     pub full_content_items: usize,
-    /// 피드 안의 링크 (채널·item)
+    /// 피드 안의 링크 (채널·item 의 link, 영구 링크인 guid)
     pub links: Vec<String>,
 }
 
@@ -339,6 +386,17 @@ pub fn parse_feed(body: &str) -> FeedFacts {
             .captures_iter(body)
             .chain(ATOM_LINK.captures_iter(body))
             .map(|c| c[1].trim().to_string())
+            .chain(
+                GUID.captures_iter(body)
+                    .filter(|c| {
+                        !c.get(1).is_some_and(|a| {
+                            a.as_str()
+                                .to_ascii_lowercase()
+                                .contains("ispermalink=\"false\"")
+                        })
+                    })
+                    .map(|c| c[2].trim().to_string()),
+            )
             .filter(|l| !l.is_empty())
             .collect(),
     }
@@ -406,6 +464,16 @@ mod tests {
 
         let f = run(r#"<html><body><span property="og:title">x</span><p>본문</p></body></html>"#);
         assert_eq!(f, SearchFacts::default());
+        let f = run(
+            r#"<html><head><link rel="describedby" href="/llms.txt?v=1"><link rel="describedby" href="/about">
+<link rel="license" type="application/rsl+xml" href="/license.xml"><link rel="license" href="/cc">
+<script type="application/rsl+xml"><rsl/></script><script>var a = "50%";</script></head>
+<body><blockquote>인용</blockquote><p>매출 30% 증가, 1,200명, 3.5배 <q>짧은 인용</q></p><style>p{width:10%}</style></body></html>"#,
+        );
+        assert_eq!(f.llms_describedby, ["/llms.txt?v=1"]);
+        assert_eq!(f.rsl_links, ["/license.xml"]);
+        assert!(f.rsl_script);
+        assert_eq!((f.quotations, f.statistics), (2, 3));
         let many: String = (0..25)
             .map(|i| format!("<a href=\"#!/p{i}\"></a>"))
             .collect();
@@ -444,13 +512,22 @@ mod tests {
     fn feeds() {
         let f = parse_feed(
             "<rss version=\"2.0\"><channel><link><![CDATA[ https://a.com/ ]]></link><item><link>https://a.com/1</link>\
-             <content:encoded>x</content:encoded></item><item><link></link></item></channel></rss>",
+             <content:encoded>x</content:encoded><guid>https://a.com/g</guid><guid isPermaLink=\"false\">id-1</guid>\
+             <guid isPermaLink=\"true\"><![CDATA[/rel]]></guid></item><item><link></link></item></channel></rss>",
         );
         assert_eq!(
             (f.valid, f.format, f.items, f.full_content_items),
             (true, Some("rss2"), 2, 1)
         );
-        assert_eq!(f.links, ["https://a.com/", "https://a.com/1"]);
+        assert_eq!(
+            f.links,
+            [
+                "https://a.com/",
+                "https://a.com/1",
+                "https://a.com/g",
+                "/rel"
+            ]
+        );
         let f = parse_feed(r#"<rdf:RDF><item></item></rdf:RDF>"#);
         assert_eq!(f.format, Some("rss1"));
         let f = parse_feed(

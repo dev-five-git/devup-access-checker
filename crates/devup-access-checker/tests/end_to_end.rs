@@ -1349,6 +1349,16 @@ async fn search_engine_network_items() {
         assert_eq!(presence(&r, id), Presence::Present, "{id}");
     }
     assert_eq!(presence(&r, "crawling.feed_oversize"), Presence::Missing);
+    let ua = r
+        .get("crawling.ua_access.yeti")
+        .unwrap()
+        .value
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (ua["title"].as_str(), ua["sameTitleAsPage"].as_bool()),
+        (Some("t"), Some(true))
+    );
     assert_eq!(presence(&r, "not_found_page.redirects"), Presence::Missing);
 
     // 형식이 틀린 키는 요청하지 않는다
@@ -1370,5 +1380,56 @@ async fn search_engine_network_items() {
     assert_eq!(
         presence(&r, "not_found_page.redirects"),
         Presence::NotApplicable
+    );
+}
+
+#[tokio::test]
+async fn subpath_llms_agent_card_and_robots_chain() {
+    let s = MockServer::start().await;
+    let ok = |ct: &str, body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", ct)
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .and(path("/docs/page"))
+        .respond_with(ok(
+            "text/html",
+            "<html><head><title>d</title></head><body>x</body></html>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/docs/llms.txt"))
+        .respond_with(ok("text/plain", "# Docs\n"))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/agent-card.json"))
+        .respond_with(ok("application/json", r#"{"name":"a"}"#))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ok("text/plain", "User-agent: *\nAllow: /\n"))
+        .mount(&s)
+        .await;
+    let r = Checker::new(opts(|o| {
+        o.page_samples = 0;
+        o.check_resources = false;
+        o.check_ai_user_agents = false;
+    }))
+    .check(&format!("{}/docs/page", s.uri()))
+    .await
+    .unwrap();
+    assert_eq!(presence(&r, "geo.llms_txt_subpath"), Presence::Present);
+    assert_eq!(presence(&r, "geo.a2a_agent_card"), Presence::Missing);
+    assert_eq!(
+        presence(&r, "crawling.robots_redirect_hops"),
+        Presence::Missing
+    );
+    assert_eq!(
+        presence(&r, "crawling.robots_content_type"),
+        Presence::Present
     );
 }

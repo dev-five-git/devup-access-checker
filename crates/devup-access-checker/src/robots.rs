@@ -23,6 +23,14 @@ pub struct Robots {
     pub crawl_delays: Vec<(String, String)>,
     /// 해석할 수 없는 줄 (알 수 없는 지시자, 콜론 없음)
     pub invalid_lines: Vec<String>,
+    /// (user-agent 목록, `Content-Signal` 값) — Cloudflare Content Signals
+    pub content_signals: Vec<(String, String)>,
+    /// (user-agent 목록, `Content-Usage` 값) — IETF aipref
+    pub content_usage: Vec<(String, String)>,
+    /// `License:` 지시자 값 — RSL
+    pub licenses: Vec<String>,
+    /// 첫 `User-agent` 앞에 있어 어느 그룹에도 속하지 않는 Allow/Disallow 수
+    pub orphan_rules: usize,
 }
 
 impl Robots {
@@ -54,6 +62,7 @@ impl Robots {
                 }
                 "allow" | "disallow" => {
                     last_was_agent = false;
+                    robots.orphan_rules += usize::from(current.is_none());
                     if let Some(g) = current.as_mut()
                         && !value.is_empty()
                     {
@@ -77,9 +86,28 @@ impl Robots {
                         .unwrap_or_default();
                     robots.crawl_delays.push((agents, value.to_string()));
                 }
+                "content-signal" | "content-usage" => {
+                    last_was_agent = false;
+                    let agents = current
+                        .as_ref()
+                        .map(|g| g.agents.join(","))
+                        .unwrap_or_default();
+                    let list = if key == "content-signal" {
+                        &mut robots.content_signals
+                    } else {
+                        &mut robots.content_usage
+                    };
+                    list.push((agents, value.to_string()));
+                }
+                "license" => {
+                    if !value.is_empty() {
+                        robots.licenses.push(value.to_string());
+                    }
+                }
                 // 표준 외이지만 널리 쓰이는 지시자
-                "host" | "clean-param" | "noindex" | "request-rate" | "visit-time"
-                | "content-signal" => last_was_agent = false,
+                "host" | "clean-param" | "noindex" | "request-rate" | "visit-time" => {
+                    last_was_agent = false
+                }
                 _ => {
                     last_was_agent = false;
                     robots.invalid_lines.push(line.to_string());
@@ -106,6 +134,14 @@ impl Robots {
             .iter()
             .filter(|g| g.agents.contains(&token))
             .collect();
+        // Applebot 은 자기 그룹이 없으면 Googlebot 규칙을 따른다 (Apple 문서)
+        if selected.is_empty() && token == "applebot" {
+            selected = self
+                .groups
+                .iter()
+                .filter(|g| g.agents.iter().any(|a| a == "googlebot"))
+                .collect();
+        }
         if selected.is_empty() {
             selected = self
                 .groups
@@ -243,5 +279,32 @@ Sitemap: https://example.com/sitemap.xml # main
         // url 크레이트가 만든 경로(퍼센트 인코딩)와 원문 패턴이 맞아야 한다
         assert!(!r.is_allowed("Googlebot", "/%EA%B2%80%EC%83%89"));
         assert!(!r.is_allowed("Googlebot", "/a%2Fb"));
+    }
+
+    #[test]
+    fn ai_preference_directives_and_orphans() {
+        let r = Robots::parse(
+            "Disallow: /early\nUser-agent: *\nContent-Signal: search=yes, ai-train=no\nContent-Usage: train-ai=n\n\
+             License: https://a.com/license.xml\nLicense:\nAllow: /\n\nUser-agent: Googlebot\nDisallow: /g\n",
+        );
+        assert!(r.invalid_lines.is_empty(), "{:?}", r.invalid_lines);
+        assert_eq!(
+            r.content_signals,
+            [("*".to_string(), "search=yes, ai-train=no".to_string())]
+        );
+        assert_eq!(
+            r.content_usage,
+            [("*".to_string(), "train-ai=n".to_string())]
+        );
+        assert_eq!(r.licenses, ["https://a.com/license.xml"]);
+        assert_eq!(r.orphan_rules, 1);
+        // Applebot 은 Googlebot 그룹을 따른다
+        assert!(!r.is_allowed("Applebot", "/g"));
+        assert!(r.is_allowed("Applebot", "/x"));
+        let r =
+            Robots::parse("User-agent: Applebot\nAllow: /\nUser-agent: Googlebot\nDisallow: /\n");
+        assert!(r.is_allowed("Applebot", "/g"));
+        let r = Robots::parse("User-agent: *\nDisallow: /\n");
+        assert!(!r.is_allowed("Applebot", "/"));
     }
 }
