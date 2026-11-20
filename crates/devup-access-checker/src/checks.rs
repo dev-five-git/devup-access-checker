@@ -246,6 +246,10 @@ pub struct SearchProbes {
     pub agent_card: Option<FileProbe>,
     /// robots.txt 요청의 리다이렉트 체인. None = 수행 안 함
     pub robots_chain: Option<Result<Vec<Hop>, String>>,
+    /// `/.well-known/change-password` 첫 응답 (리다이렉트 1단계까지). None = 수행 안 함
+    pub change_password: Option<Result<Vec<Hop>, String>>,
+    /// `/.well-known/gpc.json`. None = 수행 안 함
+    pub gpc: Option<FileProbe>,
     /// 첫 RSS/Atom 피드 본문. None = 피드 링크 없음 또는 수행 안 함
     pub feed: Option<FileProbe>,
     /// `/BingSiteAuth.xml`. None = 수행 안 함
@@ -1539,6 +1543,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     search_checks(&mut o, i, &robots);
     search_network_checks(&mut o, i, &robots);
     geo_spec_checks(&mut o, i, &robots);
+    security_spec_checks(&mut o, i);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -4094,6 +4099,9 @@ fn agent_checks(o: &mut Out, i: &Inputs) {
 
 /// OWASP Secure Headers "headers_remove" 목록 (Server·X-Powered-By 는 별도 항목). 버전·내부 구조를 노출한다.
 pub const INFO_DISCLOSURE_HEADERS: &[&str] = &[
+    // webhint no-disallowed-headers
+    "x-runtime",
+    "x-version",
     "$wsep",
     "host-header",
     "k-proxy-request",
@@ -4241,8 +4249,22 @@ fn owasp_checks(o: &mut Out, i: &Inputs) {
         } else {
             Presence::NotApplicable
         },
-        wk.exists
-            .then(|| json!({ "contact": contact, "expires": expires })),
+        wk.exists.then(|| {
+            let mut v = json!({ "contact": contact, "expires": expires });
+            for k in [
+                "encryption",
+                "acknowledgments",
+                "preferred-languages",
+                "canonical",
+                "policy",
+                "hiring",
+                "csaf",
+                "bug-bounty",
+            ] {
+                v[k] = json!(field(k));
+            }
+            v
+        }),
         Some("RFC 9116".into()),
     );
 }
@@ -5795,6 +5817,867 @@ fn geo_spec_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
     );
 }
 
+/// 응답 헤더의 모든 값 (여러 번 온 헤더는 각각).
+fn header_values(h: &HeaderMap, name: &str) -> Vec<String> {
+    h.get_all(name)
+        .iter()
+        .filter_map(|v| v.to_str().ok())
+        .map(str::to_string)
+        .collect()
+}
+
+/// (항목 id, 표시명, CSP 정책 하나에 대한 판정)
+type CspRule = (&'static str, &'static str, fn(&crate::sec::Csp) -> bool);
+
+/// 보안 스캐너(Observatory·webhint·hstspreload·RFC 9116) 대조 항목.
+fn security_spec_checks(o: &mut Out, i: &Inputs) {
+    use crate::sec;
+    use Category::*;
+    let f = i.facts;
+    let s = &f.sec;
+    let h = &i.page.headers;
+    let base = &i.page.final_url;
+    let https = base.scheme() == "https";
+    let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
+    let flag = |b: bool, applicable: bool| {
+        if applicable {
+            Presence::from_bool(b)
+        } else {
+            Presence::NotApplicable
+        }
+    };
+
+    // ===== CSP =====
+    let header_csp: Vec<sec::Csp> = header_values(h, "content-security-policy")
+        .iter()
+        .flat_map(|v| v.split(','))
+        .map(sec::parse_csp)
+        .collect();
+    let mut all_csp = header_csp.clone();
+    all_csp.extend(s.meta_csp.iter().map(|v| sec::parse_csp(v)));
+    let has_csp = !all_csp.is_empty();
+    // 여러 정책은 모두 통과해야 하므로, 모든 정책이 허용할 때만 문제로 본다
+    let every = |pred: fn(&sec::Csp) -> bool| has_csp && all_csp.iter().all(pred);
+    let meta_ignored: Vec<&str> = s
+        .meta_csp
+        .iter()
+        .flat_map(|m| {
+            let c = sec::parse_csp(m);
+            ["frame-ancestors", "report-uri", "sandbox"]
+                .into_iter()
+                .filter(move |d| c.get(d).is_some())
+        })
+        .collect();
+    o.push(
+        "security.csp_meta",
+        Security,
+        "meta 태그 CSP",
+        Presence::from_bool(!s.meta_csp.is_empty()),
+        (!s.meta_csp.is_empty())
+            .then(|| json!({ "policies": s.meta_csp, "ignoredDirectives": meta_ignored })),
+        Some("meta CSP 는 frame-ancestors·report-uri·sandbox 를 무시함".into()),
+    );
+    let csp_items: [CspRule; 10] = [
+        (
+            "security.csp_unsafe_inline",
+            "CSP script-src 'unsafe-inline' 허용",
+            sec::Csp::unsafe_inline,
+        ),
+        (
+            "security.csp_unsafe_eval",
+            "CSP 'unsafe-eval' 허용",
+            sec::Csp::unsafe_eval,
+        ),
+        (
+            "security.csp_broad_script_source",
+            "CSP script-src 과다 허용 (*·https: 등)",
+            sec::Csp::broad_script,
+        ),
+        (
+            "security.csp_object_src_unrestricted",
+            "CSP object-src 미제한",
+            sec::Csp::object_unrestricted,
+        ),
+        (
+            "security.csp_unsafe_inline_style",
+            "CSP style-src 'unsafe-inline' 허용",
+            sec::Csp::unsafe_inline_style,
+        ),
+        (
+            "security.csp_base_uri_unrestricted",
+            "CSP base-uri 미제한",
+            sec::Csp::base_uri_unrestricted,
+        ),
+        (
+            "security.csp_form_action_unrestricted",
+            "CSP form-action 미제한",
+            sec::Csp::form_action_unrestricted,
+        ),
+        (
+            "security.csp_default_src_missing",
+            "CSP default-src 없음",
+            |c| c.get("default-src").is_none(),
+        ),
+        (
+            "security.csp_strict_dynamic_without_nonce",
+            "CSP strict-dynamic 에 nonce·hash 없음",
+            sec::Csp::strict_dynamic_without_nonce,
+        ),
+        (
+            "security.csp_duplicate_directives",
+            "CSP 지시어 중복",
+            |c| !c.duplicates.is_empty(),
+        ),
+    ];
+    for (id, label, pred) in csp_items {
+        let any = has_csp && all_csp.iter().any(pred);
+        let value = if matches!(
+            id,
+            "security.csp_strict_dynamic_without_nonce" | "security.csp_duplicate_directives"
+        ) {
+            any
+        } else {
+            every(pred)
+        };
+        o.push(
+            id,
+            Security,
+            label,
+            flag(value, has_csp),
+            None,
+            Some("Mozilla HTTP Observatory 기준".into()),
+        );
+    }
+    o.push(
+        "security.csp_insecure_scheme",
+        Security,
+        "CSP 에 http: 출처",
+        flag(
+            all_csp.iter().any(sec::Csp::insecure_scheme),
+            has_csp && https,
+        ),
+        None,
+        None,
+    );
+    let report_only = header(h, "content-security-policy-report-only");
+    o.push(
+        "security.csp_report_only_only",
+        Security,
+        "CSP 보고 전용만 설정",
+        flag(report_only.is_some(), !has_csp),
+        report_only.map(Value::from),
+        None,
+    );
+    let xfo = header(h, "x-frame-options").map(|v| v.trim().to_ascii_lowercase());
+    let xfo_ok = xfo
+        .as_deref()
+        .is_some_and(|v| matches!(v, "deny" | "sameorigin"));
+    o.push(
+        "security.clickjacking_unprotected",
+        Security,
+        "클릭재킹 방어 없음 (X-Frame-Options·frame-ancestors)",
+        Presence::from_bool(
+            !xfo_ok && !header_csp.iter().any(sec::Csp::frame_ancestors_restricted),
+        ),
+        None,
+        Some("meta CSP 의 frame-ancestors 는 무시됨".into()),
+    );
+
+    // ===== 헤더 값 =====
+    o.push(
+        "security.x_frame_options_invalid",
+        Security,
+        "X-Frame-Options 값 오류",
+        flag(!xfo_ok, xfo.is_some()),
+        xfo.clone().map(Value::from),
+        Some("DENY·SAMEORIGIN 만 유효 (ALLOW-FROM 은 무시됨)".into()),
+    );
+    let xcto = header(h, "x-content-type-options");
+    o.push(
+        "security.x_content_type_options_invalid",
+        Security,
+        "X-Content-Type-Options 값 오류",
+        flag(
+            !xcto
+                .as_deref()
+                .is_some_and(|v| v.trim().eq_ignore_ascii_case("nosniff")),
+            xcto.is_some(),
+        ),
+        xcto.map(Value::from),
+        None,
+    );
+    const REFERRER: &[&str] = &[
+        "no-referrer",
+        "no-referrer-when-downgrade",
+        "same-origin",
+        "origin",
+        "strict-origin",
+        "origin-when-cross-origin",
+        "strict-origin-when-cross-origin",
+        "unsafe-url",
+    ];
+    let referrer_raw: Vec<String> = header_values(h, "referrer-policy")
+        .into_iter()
+        .chain(f.meta("referrer").map(str::to_string))
+        .collect();
+    let effective = referrer_raw
+        .iter()
+        .flat_map(|v| v.split(','))
+        .map(|t| t.trim().to_ascii_lowercase())
+        .rfind(|t| REFERRER.contains(&t.as_str()));
+    o.push(
+        "security.referrer_policy_unsafe",
+        Security,
+        "안전하지 않은 Referrer-Policy",
+        flag(
+            effective.as_deref().is_none_or(|t| {
+                matches!(
+                    t,
+                    "origin"
+                        | "origin-when-cross-origin"
+                        | "unsafe-url"
+                        | "no-referrer-when-downgrade"
+                )
+            }),
+            !referrer_raw.is_empty(),
+        ),
+        (!referrer_raw.is_empty())
+            .then(|| json!({ "values": referrer_raw, "effective": effective })),
+        Some("헤더와 meta referrer 중 마지막 유효 값 기준 (유효 값이 없으면 문제)".into()),
+    );
+    let mut co_bad: Vec<String> = Vec::new();
+    for (name, allowed) in [
+        (
+            "cross-origin-opener-policy",
+            &[
+                "same-origin",
+                "same-origin-allow-popups",
+                "noopener-allow-popups",
+                "unsafe-none",
+            ][..],
+        ),
+        (
+            "cross-origin-embedder-policy",
+            &["require-corp", "credentialless", "unsafe-none"][..],
+        ),
+        (
+            "cross-origin-resource-policy",
+            &["same-site", "same-origin", "cross-origin"][..],
+        ),
+    ] {
+        let vals = header_values(h, name);
+        let token = |v: &str| {
+            v.split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase()
+        };
+        if vals.len() > 1 || vals.iter().any(|v| !allowed.contains(&token(v).as_str())) {
+            co_bad.push(format!("{name}: {}", vals.join(", ")));
+        }
+    }
+    let co_present = [
+        "cross-origin-opener-policy",
+        "cross-origin-embedder-policy",
+        "cross-origin-resource-policy",
+    ]
+    .iter()
+    .any(|n| h.contains_key(*n));
+    o.push(
+        "security.cross_origin_policy_invalid",
+        Security,
+        "COOP·COEP·CORP 값 오류",
+        flag(!co_bad.is_empty(), co_present),
+        list(&co_bad),
+        None,
+    );
+    let acao = header(h, "access-control-allow-origin");
+    o.push(
+        "security.cors_wildcard",
+        Security,
+        "CORS 전체 허용 (Access-Control-Allow-Origin: *)",
+        Presence::from_bool(acao.as_deref().is_some_and(|v| v.trim() == "*")),
+        acao.map(Value::from),
+        None,
+    );
+    let hpkp: Vec<String> = ["public-key-pins", "public-key-pins-report-only"]
+        .into_iter()
+        .filter(|n| h.contains_key(*n))
+        .map(str::to_string)
+        .collect();
+    o.push(
+        "security.hpkp",
+        Security,
+        "폐기된 HPKP 헤더",
+        Presence::from_bool(!hpkp.is_empty()),
+        list(&hpkp),
+        None,
+    );
+    o.push(
+        "security.p3p",
+        Security,
+        "폐기된 P3P 정책",
+        Presence::from_bool(h.contains_key("p3p") || s.p3p_link),
+        header(h, "p3p").map(Value::from),
+        None,
+    );
+    let xua =
+        h.contains_key("x-ua-compatible") || s.http_equiv.iter().any(|e| e == "x-ua-compatible");
+    o.push(
+        "meta.x_ua_compatible",
+        Meta,
+        "X-UA-Compatible (IE 전용)",
+        Presence::from_bool(xua),
+        None,
+        None,
+    );
+
+    // ===== HSTS =====
+    let hsts_raw = header(h, "strict-transport-security");
+    let hsts = hsts_raw.as_deref().map(sec::parse_hsts);
+    o.push(
+        "transport.hsts_invalid",
+        Transport,
+        "HSTS 헤더 형식 오류",
+        flag(
+            hsts.as_ref().is_some_and(|x| !x.errors.is_empty()),
+            hsts.is_some(),
+        ),
+        hsts.as_ref().and_then(|x| list(&x.errors)),
+        None,
+    );
+    let hsts_value = hsts.as_ref().map(|x| {
+        json!({ "maxAge": x.max_age, "includeSubDomains": x.include_subdomains, "preload": x.preload })
+    });
+    o.push(
+        "transport.hsts_max_age_short",
+        Transport,
+        "HSTS max-age 6개월 미만",
+        hsts.as_ref()
+            .and_then(|x| x.max_age)
+            .map_or(Presence::NotApplicable, |m| {
+                Presence::from_bool(m < 15_552_000)
+            }),
+        hsts_value.clone(),
+        Some("Observatory 기준 6개월(15552000초). 값으로 preload 조건(1년)도 판단 가능".into()),
+    );
+    let mut preload_fail: Vec<&str> = Vec::new();
+    if let Some(x) = hsts.as_ref().filter(|x| x.preload) {
+        if x.max_age.is_none_or(|m| m < 31_536_000) {
+            preload_fail.push("max-age 1년 미만");
+        }
+        if !x.include_subdomains {
+            preload_fail.push("includeSubDomains 없음");
+        }
+        let same_host_https = i
+            .http_version
+            .and_then(|r| r.as_ref().ok())
+            .is_some_and(|(_, u)| u.scheme() == "https" && u.host_str() == base.host_str());
+        if !same_host_https {
+            preload_fail.push("http 가 같은 호스트 https 로 리다이렉트되지 않음 (또는 확인 못 함)");
+        }
+    }
+    o.push(
+        "transport.hsts_preload_ineligible",
+        Transport,
+        "HSTS preload 요건 미충족",
+        flag(
+            !preload_fail.is_empty(),
+            hsts.as_ref().is_some_and(|x| x.preload),
+        ),
+        (!preload_fail.is_empty()).then(|| json!(preload_fail)),
+        Some("hstspreload.org 제출 요건".into()),
+    );
+    let downgrade: Vec<String> = i
+        .redirect_chain
+        .and_then(|r| r.as_ref().ok())
+        .map(|hops| {
+            hops.windows(2)
+                .filter(|w| w[0].url.starts_with("https://") && w[1].url.starts_with("http://"))
+                .map(|w| format!("{} → {}", w[0].url, w[1].url))
+                .collect()
+        })
+        .unwrap_or_default();
+    o.push(
+        "transport.https_to_http_redirect",
+        Transport,
+        "https 에서 http 로 하향 리다이렉트",
+        if i.redirect_chain.is_some_and(|r| r.is_ok()) {
+            Presence::from_bool(!downgrade.is_empty())
+        } else {
+            Presence::NotApplicable
+        },
+        list(&downgrade),
+        None,
+    );
+
+    // ===== 쿠키 =====
+    let cookies = sec::check_cookies(&header_values(h, "set-cookie"), https);
+    let has_cookies = cookies.cookies > 0;
+    for (id, label, v) in [
+        (
+            "security.cookie_samesite_invalid",
+            "쿠키 SameSite 값 오류",
+            &cookies.samesite_invalid,
+        ),
+        (
+            "security.session_cookie_flags",
+            "세션·CSRF 쿠키 보호 속성 누락",
+            &cookies.session_flags,
+        ),
+        (
+            "security.cookie_prefix_invalid",
+            "__Host-·__Secure- 쿠키 접두사 오류",
+            &cookies.prefix_invalid,
+        ),
+        (
+            "security.cookie_syntax_invalid",
+            "Set-Cookie 문법 오류",
+            &cookies.syntax_invalid,
+        ),
+    ] {
+        o.push(
+            id,
+            Security,
+            label,
+            flag(!v.is_empty(), has_cookies),
+            list(v),
+            None,
+        );
+    }
+
+    // ===== SRI·URL =====
+    o.push(
+        "security.sri_invalid",
+        Security,
+        "integrity 속성 오류",
+        flag(!s.sri_issues.is_empty(), s.sri_elements > 0),
+        list(&s.sri_issues),
+        Some("형식·sha384 미만·crossorigin 없음·http 로드".into()),
+    );
+    o.push(
+        "security.protocol_relative_urls",
+        Security,
+        "프로토콜 상대 URL (//)",
+        Presence::from_bool(s.protocol_relative_count > 0),
+        (s.protocol_relative_count > 0)
+            .then(|| json!({ "count": s.protocol_relative_count, "samples": s.protocol_relative })),
+        None,
+    );
+
+    // ===== 문자 인코딩 =====
+    o.push(
+        "meta.bom",
+        Meta,
+        "BOM 으로 시작하는 문서",
+        Presence::from_bool(i.page.bom),
+        None,
+        None,
+    );
+    let header_cs = header(h, "content-type").and_then(|ct| {
+        ct.split(';').find_map(|p| {
+            let (k, v) = p.split_once('=')?;
+            k.trim()
+                .eq_ignore_ascii_case("charset")
+                .then(|| v.trim().trim_matches('"').to_string())
+        })
+    });
+    let declared = header_cs.clone().or_else(|| f.charset.clone());
+    let enc = declared.as_deref().map(|l| {
+        encoding_rs::Encoding::for_label(l.trim().as_bytes())
+            .map_or_else(|| l.trim().to_ascii_lowercase(), |e| e.name().to_string())
+    });
+    o.push(
+        "meta.charset_not_utf8",
+        Meta,
+        "UTF-8 이 아닌 문자 인코딩",
+        enc.as_deref().map_or(Presence::NotApplicable, |e| {
+            Presence::from_bool(e != "UTF-8")
+        }),
+        enc.map(Value::from),
+        None,
+    );
+    let offset = i.page.meta_charset_offset;
+    o.push(
+        "meta.charset_late",
+        Meta,
+        "늦게 선언된 charset (1024바이트 밖·head 첫 요소 아님)",
+        if s.charset_metas == 0 {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(offset.is_none_or(|n| n > 1024) || !s.charset_first_in_head)
+        },
+        Some(json!({ "byteOffset": offset, "firstInHead": s.charset_first_in_head })),
+        None,
+    );
+    o.push(
+        "meta.charset_duplicate",
+        Meta,
+        "charset 선언 중복",
+        flag(s.charset_metas > 1, s.charset_metas > 0),
+        Some(json!(s.charset_metas)),
+        None,
+    );
+    let ct = header(h, "content-type");
+    o.push(
+        "transport.content_type_invalid",
+        Transport,
+        "Content-Type 헤더 누락·오류",
+        Presence::from_bool(!ct.as_deref().is_some_and(|v| {
+            let m = v
+                .split(';')
+                .next()
+                .unwrap_or_default()
+                .trim()
+                .to_ascii_lowercase();
+            m == "text/html" || m == "application/xhtml+xml"
+        })),
+        ct.map(Value::from),
+        None,
+    );
+
+    // ===== 마크업·메타 값 =====
+    o.push(
+        "content.button_type_missing",
+        Content,
+        "폼 안의 type 없는 button (submit 으로 동작)",
+        count_presence(s.buttons_without_type, s.buttons_in_forms),
+        Some(json!(s.buttons_without_type)),
+        None,
+    );
+    const VIEWPORT_KEYS: &[&str] = &[
+        "width",
+        "height",
+        "initial-scale",
+        "minimum-scale",
+        "maximum-scale",
+        "user-scalable",
+        "viewport-fit",
+        "interactive-widget",
+    ];
+    let mut vp_bad: Vec<String> = Vec::new();
+    if let Some(v) = f.meta("viewport") {
+        let pairs: Vec<(String, String)> = v
+            .split([',', ';'])
+            .filter_map(|p| {
+                let (k, val) = p.split_once('=')?;
+                Some((
+                    k.trim().to_ascii_lowercase(),
+                    val.trim().to_ascii_lowercase(),
+                ))
+            })
+            .collect();
+        for (k, val) in &pairs {
+            if !VIEWPORT_KEYS.contains(&k.as_str()) {
+                vp_bad.push(format!("알 수 없는 키: {k}"));
+            }
+            if k == "width" && val != "device-width" && val.parse::<f64>().is_err() {
+                vp_bad.push(format!("width 값 오류: {val}"));
+            }
+        }
+        match pairs.iter().find(|(k, _)| k == "initial-scale") {
+            None => vp_bad.push("initial-scale 없음".into()),
+            Some((_, val)) if val.parse::<f64>().ok() != Some(1.0) => {
+                vp_bad.push(format!("initial-scale={val}"))
+            }
+            _ => {}
+        }
+        if s.viewports > 1 {
+            vp_bad.push("viewport 중복".into());
+        }
+    }
+    o.push(
+        "meta.viewport_invalid",
+        Meta,
+        "viewport 값 오류",
+        flag(!vp_bad.is_empty(), s.viewports > 0),
+        list(&vp_bad),
+        Some("webhint meta-viewport (확대 차단은 accessibility.zoom_disabled)".into()),
+    );
+    let bad_colors: Vec<String> = s
+        .theme_colors
+        .iter()
+        .filter(|c| !sec::is_css_color(c))
+        .cloned()
+        .collect();
+    o.push(
+        "meta.theme_color_invalid",
+        Meta,
+        "theme-color 값 오류",
+        flag(!bad_colors.is_empty(), !s.theme_colors.is_empty()),
+        list(&bad_colors),
+        None,
+    );
+    let cc = header(h, "cache-control").map(|v| v.to_ascii_lowercase());
+    let mut cc_bad: Vec<String> = Vec::new();
+    if let Some(v) = &cc {
+        const KNOWN: &[&str] = &[
+            "max-age",
+            "s-maxage",
+            "no-cache",
+            "no-store",
+            "no-transform",
+            "must-revalidate",
+            "proxy-revalidate",
+            "must-understand",
+            "private",
+            "public",
+            "immutable",
+            "stale-while-revalidate",
+            "stale-if-error",
+        ];
+        let ds: Vec<(&str, Option<&str>)> = v
+            .split(',')
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .map(|d| {
+                d.split_once('=')
+                    .map_or((d, None), |(k, x)| (k.trim(), Some(x.trim())))
+            })
+            .collect();
+        for (k, x) in &ds {
+            if !KNOWN.contains(k) {
+                cc_bad.push(format!("알 수 없는 지시어: {k}"));
+            }
+            if matches!(*k, "max-age" | "s-maxage")
+                && !x.is_some_and(|x| x.trim_matches('"').parse::<u64>().is_ok())
+            {
+                cc_bad.push(format!("{k} 값 오류"));
+            }
+        }
+        let has = |k: &str| ds.iter().any(|(d, _)| *d == k);
+        if (has("max-age") || has("s-maxage")) && (has("no-cache") || has("no-store")) {
+            cc_bad.push("max-age 와 no-cache·no-store 동시 사용".into());
+        }
+    }
+    o.push(
+        "performance.cache_control_conflict",
+        Performance,
+        "Cache-Control 지시어 충돌·오류",
+        flag(!cc_bad.is_empty(), cc.is_some()),
+        list(&cc_bad),
+        None,
+    );
+    let compressed = i
+        .content_encoding
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|e| e.as_ref());
+    let vary_ok = header(h, "vary").is_some_and(|v| {
+        v.split(',')
+            .any(|t| t.trim().eq_ignore_ascii_case("accept-encoding") || t.trim() == "*")
+    });
+    o.push(
+        "performance.vary_accept_encoding_missing",
+        Performance,
+        "압축 응답에 Vary: Accept-Encoding 없음",
+        flag(!vary_ok, compressed.is_some()),
+        compressed.map(|e| json!(e)),
+        None,
+    );
+
+    // ===== manifest 세부 (webhint) =====
+    let manifest = i
+        .extended
+        .manifest
+        .as_ref()
+        .and_then(|r| r.as_ref().ok())
+        .and_then(|(_, j)| j.as_ref());
+    let mstr = |k: &str| {
+        manifest
+            .and_then(|j| j.get(k))
+            .and_then(Value::as_str)
+            .map(str::trim)
+    };
+    let (name, short) = (mstr("name"), mstr("short_name"));
+    let len = |s: Option<&str>| s.map_or(0, |x| x.chars().count());
+    let mut name_bad: Vec<&str> = Vec::new();
+    if name.is_none_or(str::is_empty) {
+        name_bad.push("name 없음");
+    } else if len(name) > 30 {
+        name_bad.push("name 30자 초과");
+    }
+    if len(short) > 12 || (short.is_none_or(str::is_empty) && len(name) > 12) {
+        name_bad.push("short_name 12자 초과 또는 없음");
+    }
+    o.push(
+        "meta.manifest_name_length",
+        Meta,
+        "manifest name·short_name 길이",
+        flag(!name_bad.is_empty(), manifest.is_some()),
+        (!name_bad.is_empty()).then(|| json!(name_bad)),
+        Some("webhint manifest-app-name (name ≤30, short_name ≤12)".into()),
+    );
+    o.push(
+        "meta.manifest_file_extension",
+        Meta,
+        "manifest 확장자 (.webmanifest)",
+        f.manifest.as_deref().map_or(Presence::NotApplicable, |m| {
+            Presence::from_bool(
+                m.split(['?', '#'])
+                    .next()
+                    .unwrap_or_default()
+                    .ends_with(".webmanifest"),
+            )
+        }),
+        f.manifest.clone().map(Value::from),
+        None,
+    );
+    let manifest_url = f
+        .manifest
+        .as_deref()
+        .and_then(|m| f.link_base(base).join(m).ok());
+    let scope_bad = manifest.zip(manifest_url.as_ref()).map(|(j, mu)| {
+        let resolve = |k: &str| {
+            j.get(k)
+                .and_then(Value::as_str)
+                .and_then(|v| mu.join(v).ok())
+        };
+        let start = resolve("start_url");
+        let scope = resolve("scope").unwrap_or_else(|| start.clone().unwrap_or_else(|| mu.clone()));
+        let scope_dir = scope.as_str()[..=scope.as_str().rfind('/').unwrap_or(0)].to_string();
+        match start {
+            None => Some("start_url 없음"),
+            Some(s) if s.origin() != base.origin() => Some("start_url 이 다른 출처"),
+            Some(s) if !s.as_str().starts_with(&scope_dir) => Some("start_url 이 scope 밖"),
+            Some(_) => None,
+        }
+    });
+    o.push(
+        "meta.manifest_start_url_scope",
+        Meta,
+        "manifest start_url 범위 오류",
+        scope_bad.map_or(Presence::NotApplicable, |b| {
+            Presence::from_bool(b.is_some())
+        }),
+        scope_bad.flatten().map(Value::from),
+        None,
+    );
+
+    // ===== security.txt =====
+    let wk = &i.well_known.security_txt;
+    let txt = wk
+        .exists
+        .then(|| sec::parse_security_txt(wk.body.as_deref().unwrap_or_default()));
+    let expires = txt.as_ref().and_then(|t| {
+        t.values("expires")
+            .first()
+            .and_then(|v| sec::rfc3339_to_unix(v))
+    });
+    o.push(
+        "transport.security_txt_expired",
+        Transport,
+        "security.txt 만료",
+        expires.map_or(Presence::NotApplicable, |e| {
+            Presence::from_bool(e < i.extended.now)
+        }),
+        expires.map(
+            |e| json!({ "expiresUnix": e, "moreThanYearAhead": e - i.extended.now > 366 * 86_400 }),
+        ),
+        Some("RFC 9116 §2.5.5".into()),
+    );
+    let mut txt_bad: Vec<String> = txt.as_ref().map(|t| t.errors.clone()).unwrap_or_default();
+    if wk.exists {
+        let ct = wk
+            .content_type
+            .as_deref()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+            .replace(' ', "");
+        if !ct.starts_with("text/plain") || !ct.contains("charset=utf-8") {
+            txt_bad.push(format!("Content-Type: {ct}"));
+        }
+        if !wk.url.starts_with("https://") {
+            txt_bad.push("https 가 아님".into());
+        }
+    }
+    o.push(
+        "transport.security_txt_invalid",
+        Transport,
+        "security.txt 형식 위반",
+        flag(!txt_bad.is_empty(), wk.exists),
+        list(&txt_bad),
+        Some("RFC 9116 §2·§3".into()),
+    );
+    o.push(
+        "transport.security_txt_signed",
+        Transport,
+        "security.txt 전자서명",
+        txt.as_ref()
+            .map_or(Presence::NotApplicable, |t| Presence::from_bool(t.signed)),
+        None,
+        Some("RFC 9116 §2.3 (권장)".into()),
+    );
+    let canonical: Vec<&str> = txt
+        .as_ref()
+        .map(|t| t.values("canonical"))
+        .unwrap_or_default();
+    let fetched = wk.final_url.as_deref().unwrap_or(&wk.url);
+    o.push(
+        "transport.security_txt_canonical_mismatch",
+        Transport,
+        "security.txt Canonical 에 실제 URL 없음",
+        flag(
+            !canonical.contains(&fetched) && !canonical.contains(&wk.url.as_str()),
+            !canonical.is_empty(),
+        ),
+        (!canonical.is_empty()).then(|| json!({ "canonical": canonical, "fetched": fetched })),
+        None,
+    );
+
+    // ===== well-known =====
+    let sp = &i.extended.search;
+    let soft404 = i
+        .not_found
+        .as_ref()
+        .is_ok_and(|(code, _)| (200..300).contains(code));
+    let (p, v) = match &sp.change_password {
+        None => (Presence::NotApplicable, None),
+        Some(Err(e)) => (Presence::Unknown, Some(json!(e))),
+        Some(Ok(hops)) => {
+            let first = hops.first().map_or(0, |h| h.status);
+            let ok = (300..400).contains(&first) || ((200..300).contains(&first) && !soft404);
+            (
+                Presence::from_bool(ok),
+                Some(json!({ "status": first, "softNotFound": soft404 })),
+            )
+        }
+    };
+    o.push(
+        "security.change_password_url",
+        Security,
+        "비밀번호 변경 URL (/.well-known/change-password)",
+        p,
+        v,
+        Some(
+            "W3C Change Password URL. 없는 경로도 200 을 주는 사이트는 200 만으로 인정하지 않음"
+                .into(),
+        ),
+    );
+    let (p, n) = match &sp.gpc {
+        None => (Presence::NotApplicable, None),
+        Some(g) if g.error.is_some() => (Presence::Unknown, g.error.clone()),
+        Some(g) => (
+            Presence::from_bool(
+                g.exists
+                    && serde_json::from_str::<Value>(g.body.as_deref().unwrap_or_default())
+                        .ok()
+                        .and_then(|j| j.get("gpc").and_then(Value::as_bool))
+                        == Some(true),
+            ),
+            None,
+        ),
+    };
+    o.push(
+        "trust.gpc",
+        Trust,
+        "Global Privacy Control (gpc.json)",
+        p,
+        None,
+        n,
+    );
+}
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -6031,6 +6914,8 @@ mod tests {
             truncated: true,
             version: "HTTP/2.0".into(),
             certificate: None,
+            bom: false,
+            meta_charset_offset: None,
         }
     }
 
@@ -7234,6 +8119,8 @@ mod tests {
             llms_subpath: None,
             agent_card: None,
             robots_chain: None,
+            change_password: None,
+            gpc: None,
             feed: Some(failed("https://a.com/feed")),
             bing_site_auth: Some(failed("https://a.com/BingSiteAuth.xml")),
             not_found_chain: Some(err()),
@@ -7282,6 +8169,8 @@ mod tests {
             llms_subpath: None,
             agent_card: None,
             robots_chain: None,
+            change_password: None,
+            gpc: None,
             feed: Some(feed),
             bing_site_auth: Some(found("https://a.com/BingSiteAuth.xml", "<users></users>")),
             not_found_chain: Some(Ok(vec![
@@ -7545,5 +8434,326 @@ mod tests {
             get(&c, "crawling.sitemap_out_of_scope").presence,
             Presence::Missing
         );
+    }
+
+    #[test]
+    fn security_scanner_items() {
+        let mut fx = Fx::failing();
+        let p = |c: &[Check], id: &str| get(c, id).presence;
+        let html = r##"<html><head><meta charset="euc-kr"><meta charset="utf-8">
+<meta http-equiv="Content-Security-Policy" content="default-src * 'unsafe-inline' 'unsafe-eval'; frame-ancestors 'none'">
+<meta http-equiv="X-UA-Compatible" content="IE=edge"><meta name="referrer" content="unsafe-url">
+<meta name="viewport" content="width=abc, foo=1, initial-scale=2"><meta name="viewport" content="width=device-width">
+<meta name="theme-color" content="not-a-color"><link rel="manifest" href="/m.json">
+<script src="//cdn.x.com/a.js" integrity="sha256-abc"></script></head>
+<body><form><button>b</button></form></body></html>"##;
+        fx.page = page("https://a.com/", html);
+        fx.page.bom = true;
+        fx.page.meta_charset_offset = Some(2000);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let h = &mut fx.page.headers;
+        h.clear();
+        h.insert("content-security-policy", "script-src 'self' 'unsafe-inline' https:; style-src 'unsafe-eval' 'unsafe-inline' http://x; script-src y".parse().unwrap());
+        h.insert(
+            "x-frame-options",
+            "ALLOW-FROM https://b.com".parse().unwrap(),
+        );
+        h.insert("x-content-type-options", "yes".parse().unwrap());
+        h.insert("cross-origin-opener-policy", "bogus".parse().unwrap());
+        h.insert("access-control-allow-origin", "*".parse().unwrap());
+        h.insert("public-key-pins", "pin".parse().unwrap());
+        h.insert("p3p", "CP=x".parse().unwrap());
+        h.insert(
+            "strict-transport-security",
+            "max-age=60; preload".parse().unwrap(),
+        );
+        h.append("set-cookie", "sessionid=1; SameSite=None".parse().unwrap());
+        h.append("set-cookie", "__Secure-a=1".parse().unwrap());
+        h.append("set-cookie", "bad name=1".parse().unwrap());
+        h.insert(
+            "content-type",
+            "text/plain; charset=euc-kr".parse().unwrap(),
+        );
+        h.insert(
+            "cache-control",
+            "max-age=60, no-store, bogus, s-maxage=x".parse().unwrap(),
+        );
+        h.insert("x-runtime", "0.1".parse().unwrap());
+        fx.content_encoding = Some(Ok(Some("br".into())));
+        fx.redirect_chain = Some(Ok(vec![
+            Hop {
+                url: "https://a.com/x".into(),
+                status: 301,
+            },
+            Hop {
+                url: "http://a.com/y".into(),
+                status: 200,
+            },
+        ]));
+        fx.http_version = Some(Ok((301, u("https://www.b.com/"))));
+        fx.extended.manifest = Some(Ok((
+            200,
+            Some(
+                json!({"name": "아주 아주 아주 긴 이름을 가진 웹 애플리케이션 서비스 이름", "start_url": "https://other.com/"}),
+            ),
+        )));
+        fx.well_known.security_txt = found(
+            "http://a.com/.well-known/security.txt",
+            "Contact: http://a.com/c\nExpires: 2000-01-01T00:00:00Z\nCanonical: https://a.com/other.txt\n",
+        );
+        fx.extended.now = 1_800_000_000;
+        fx.not_found = Ok((200, "soft".into()));
+        fx.extended.search.change_password = Some(Ok(vec![Hop {
+            url: "https://a.com/.well-known/change-password".into(),
+            status: 200,
+        }]));
+        fx.extended.search.gpc = Some(found(
+            "https://a.com/.well-known/gpc.json",
+            r#"{"gpc": false}"#,
+        ));
+        let c = fx.run();
+        for id in [
+            "security.csp_meta",
+            "security.csp_unsafe_inline",
+            "security.csp_unsafe_eval",
+            "security.csp_object_src_unrestricted",
+            "security.csp_unsafe_inline_style",
+            "security.csp_base_uri_unrestricted",
+            "security.csp_form_action_unrestricted",
+            "security.csp_broad_script_source",
+            "security.clickjacking_unprotected",
+            "security.csp_duplicate_directives",
+            "security.csp_insecure_scheme",
+            "security.x_frame_options_invalid",
+            "security.x_content_type_options_invalid",
+            "security.referrer_policy_unsafe",
+            "security.cross_origin_policy_invalid",
+            "security.cors_wildcard",
+            "security.hpkp",
+            "security.p3p",
+            "meta.x_ua_compatible",
+            "transport.hsts_max_age_short",
+            "transport.hsts_preload_ineligible",
+            "transport.https_to_http_redirect",
+            "security.cookie_samesite_invalid",
+            "security.session_cookie_flags",
+            "security.cookie_prefix_invalid",
+            "security.cookie_syntax_invalid",
+            "security.sri_invalid",
+            "security.protocol_relative_urls",
+            "meta.bom",
+            "meta.charset_not_utf8",
+            "meta.charset_late",
+            "meta.charset_duplicate",
+            "transport.content_type_invalid",
+            "content.button_type_missing",
+            "meta.viewport_invalid",
+            "meta.theme_color_invalid",
+            "performance.cache_control_conflict",
+            "performance.vary_accept_encoding_missing",
+            "meta.manifest_name_length",
+            "meta.manifest_start_url_scope",
+            "transport.security_txt_expired",
+            "transport.security_txt_invalid",
+            "transport.security_txt_canonical_mismatch",
+            "security.info_disclosure_headers",
+        ] {
+            assert_eq!(p(&c, id), Presence::Present, "{id}");
+        }
+        for id in [
+            "security.csp_default_src_missing",
+            "transport.hsts_invalid",
+            "meta.manifest_file_extension",
+            "transport.security_txt_signed",
+            "security.change_password_url",
+            "trust.gpc",
+            "security.csp_strict_dynamic_without_nonce",
+        ] {
+            assert_eq!(p(&c, id), Presence::Missing, "{id}");
+        }
+        assert_eq!(
+            p(&c, "security.csp_report_only_only"),
+            Presence::NotApplicable
+        );
+
+        // 깨끗한 응답
+        let html = r#"<html><head><meta charset="utf-8"><link rel="manifest" href="/app.webmanifest"></head><body></body></html>"#;
+        fx.page = page("https://a.com/", html);
+        fx.page.meta_charset_offset = Some(40);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let h = &mut fx.page.headers;
+        h.clear();
+        h.insert(
+            "content-security-policy",
+            "default-src 'none'; script-src 'nonce-a' 'strict-dynamic'; style-src 'self'; object-src 'none'; base-uri 'none'; form-action 'self'; frame-ancestors 'self'".parse().unwrap(),
+        );
+        h.insert("x-frame-options", "DENY".parse().unwrap());
+        h.insert("x-content-type-options", "nosniff".parse().unwrap());
+        h.insert(
+            "referrer-policy",
+            "no-referrer, strict-origin-when-cross-origin"
+                .parse()
+                .unwrap(),
+        );
+        h.insert(
+            "strict-transport-security",
+            "max-age=63072000; includeSubDomains; preload"
+                .parse()
+                .unwrap(),
+        );
+        h.insert(
+            "set-cookie",
+            "__Host-s=1; Secure; HttpOnly; Path=/; SameSite=Lax"
+                .parse()
+                .unwrap(),
+        );
+        h.insert("content-type", "text/html; charset=utf-8".parse().unwrap());
+        h.insert("cache-control", "public, max-age=60".parse().unwrap());
+        h.insert("vary", "Accept-Encoding".parse().unwrap());
+        fx.redirect_chain = Some(Ok(vec![Hop {
+            url: "https://a.com/".into(),
+            status: 200,
+        }]));
+        fx.http_version = Some(Ok((301, u("https://a.com/"))));
+        fx.extended.manifest = Some(Ok((
+            200,
+            Some(json!({"name": "앱", "short_name": "앱", "start_url": "/app/", "scope": "/"})),
+        )));
+        fx.well_known.security_txt = found(
+            "https://a.com/.well-known/security.txt",
+            "-----BEGIN PGP SIGNED MESSAGE-----\nContact: mailto:a@a.com\nExpires: 2030-01-01T00:00:00Z\nCanonical: https://a.com/.well-known/security.txt\n",
+        );
+        fx.well_known.security_txt.content_type = Some("text/plain; charset=utf-8".into());
+        fx.not_found = Ok((404, "none".into()));
+        fx.extended.search.change_password = Some(Ok(vec![Hop {
+            url: "x".into(),
+            status: 302,
+        }]));
+        fx.extended.search.gpc = Some(found(
+            "https://a.com/.well-known/gpc.json",
+            r#"{"gpc": true}"#,
+        ));
+        let c = fx.run();
+        for id in [
+            "security.csp_unsafe_inline",
+            "security.csp_unsafe_eval",
+            "security.csp_broad_script_source",
+            "security.csp_object_src_unrestricted",
+            "security.csp_unsafe_inline_style",
+            "security.csp_base_uri_unrestricted",
+            "security.csp_form_action_unrestricted",
+            "security.csp_default_src_missing",
+            "security.csp_insecure_scheme",
+            "security.clickjacking_unprotected",
+            "security.x_frame_options_invalid",
+            "security.x_content_type_options_invalid",
+            "security.referrer_policy_unsafe",
+            "transport.hsts_invalid",
+            "transport.hsts_max_age_short",
+            "transport.hsts_preload_ineligible",
+            "transport.https_to_http_redirect",
+            "security.cookie_samesite_invalid",
+            "security.session_cookie_flags",
+            "security.cookie_prefix_invalid",
+            "security.cookie_syntax_invalid",
+            "meta.charset_not_utf8",
+            "meta.charset_late",
+            "meta.charset_duplicate",
+            "transport.content_type_invalid",
+            "performance.cache_control_conflict",
+            "performance.vary_accept_encoding_missing",
+            "meta.manifest_name_length",
+            "meta.manifest_start_url_scope",
+            "transport.security_txt_expired",
+            "transport.security_txt_invalid",
+            "transport.security_txt_canonical_mismatch",
+            "security.cors_wildcard",
+            "security.protocol_relative_urls",
+            "security.csp_meta",
+        ] {
+            assert_eq!(p(&c, id), Presence::Missing, "{id}");
+        }
+        for id in [
+            "meta.viewport_invalid",
+            "meta.theme_color_invalid",
+            "security.sri_invalid",
+            "content.button_type_missing",
+            "security.cross_origin_policy_invalid",
+        ] {
+            assert_eq!(p(&c, id), Presence::NotApplicable, "{id}");
+        }
+        for id in [
+            "meta.manifest_file_extension",
+            "transport.security_txt_signed",
+            "security.change_password_url",
+            "trust.gpc",
+        ] {
+            assert_eq!(p(&c, id), Presence::Present, "{id}");
+        }
+
+        // 대상 없음·요청 실패·기타 분기
+        let html = r#"<html><head><link rel="manifest" href="/m.json"></head><body></body></html>"#;
+        fx.page = page("http://a.com/", html);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        fx.page.headers.clear();
+        fx.page.headers.insert(
+            "content-security-policy-report-only",
+            "default-src 'self'".parse().unwrap(),
+        );
+        fx.page.headers.insert(
+            "strict-transport-security",
+            "includeSubDomains".parse().unwrap(),
+        );
+        fx.page
+            .headers
+            .insert("x-ua-compatible", "IE=edge".parse().unwrap());
+        fx.redirect_chain = Some(err());
+        fx.extended.manifest = Some(Ok((
+            200,
+            Some(json!({"start_url": "/x/", "scope": "/app/"})),
+        )));
+        fx.extended.search.change_password = Some(err());
+        fx.extended.search.gpc = Some(failed("g"));
+        fx.well_known.security_txt = failed("s");
+        let c = fx.run();
+        assert_eq!(p(&c, "security.csp_report_only_only"), Presence::Present);
+        assert_eq!(p(&c, "security.csp_unsafe_inline"), Presence::NotApplicable);
+        assert_eq!(p(&c, "transport.hsts_invalid"), Presence::Present);
+        assert_eq!(
+            p(&c, "transport.hsts_max_age_short"),
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            p(&c, "transport.https_to_http_redirect"),
+            Presence::NotApplicable
+        );
+        assert_eq!(p(&c, "meta.charset_late"), Presence::NotApplicable);
+        assert_eq!(p(&c, "meta.manifest_start_url_scope"), Presence::Present);
+        assert_eq!(p(&c, "meta.manifest_name_length"), Presence::Present);
+        assert_eq!(p(&c, "meta.manifest_file_extension"), Presence::Missing);
+        assert_eq!(p(&c, "security.change_password_url"), Presence::Unknown);
+        assert_eq!(p(&c, "trust.gpc"), Presence::Unknown);
+        assert_eq!(p(&c, "meta.x_ua_compatible"), Presence::Present);
+        assert_eq!(
+            p(&c, "transport.security_txt_expired"),
+            Presence::NotApplicable
+        );
+        fx.extended.manifest = Some(Ok((200, Some(json!({"name": "a"})))));
+        fx.facts = crate::html::extract(
+            r#"<html><head><link rel="manifest" href="/m.json"></head></html>"#,
+            &fx.page.final_url,
+        );
+        fx.extended.search.change_password = None;
+        fx.extended.search.gpc = None;
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "meta.manifest_start_url_scope").value,
+            Some(json!("start_url 없음"))
+        );
+        assert_eq!(
+            p(&c, "security.change_password_url"),
+            Presence::NotApplicable
+        );
+        assert_eq!(p(&c, "trust.gpc"), Presence::NotApplicable);
     }
 }

@@ -324,6 +324,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `content.pseudo_js_links` | 의사 자바스크립트 링크 (href="fn()"·href="#"+onclick) |
 | `content.img_generic_filenames` | 의미 없는 이미지 파일명 (IMG_1234·숫자·해시) |
 | `content.parameter_heavy_links` | 파라미터가 많은 내부 링크 (3개 이상) |
+| `content.button_type_missing` | 폼 안의 type 없는 button (submit 으로 동작) |
 | `performance.render_blocking_scripts` | head 렌더링 차단 스크립트 (async/defer 없음) |
 | `performance.head_stylesheets` | head 외부 스타일시트 |
 | `performance.preconnect` | preconnect / dns-prefetch |
@@ -441,6 +442,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `trust.social_links` | SNS 링크 |
 | `trust.business_number` | 사업자등록번호 표기 |
 | `trust.copyright_year` | 저작권 연도 표기 |
+| `trust.gpc` | Global Privacy Control (gpc.json) |
 | `meta.bing_site_verification` | Bing 웹마스터 인증 |
 | `meta.amphtml` | AMP 링크 (rel=amphtml) |
 | `meta.app_link_meta` | 앱 연결 메타 (apple-itunes-app·al:*) |
@@ -466,6 +468,34 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `security.x_permitted_cross_domain_policies` | X-Permitted-Cross-Domain-Policies |
 | `security.info_disclosure_headers` | 버전·내부 정보를 노출하는 헤더 (OWASP 제거 권장) |
 | `security.deprecated_headers` | 폐기된 응답 헤더 (X-XSS-Protection·Expect-CT 등) |
+| `security.csp_meta` | meta 태그 CSP |
+| `security.csp_unsafe_inline` | CSP script-src 'unsafe-inline' 허용 |
+| `security.csp_unsafe_eval` | CSP 'unsafe-eval' 허용 |
+| `security.csp_broad_script_source` | CSP script-src 과다 허용 (*·https: 등) |
+| `security.csp_object_src_unrestricted` | CSP object-src 미제한 |
+| `security.csp_unsafe_inline_style` | CSP style-src 'unsafe-inline' 허용 |
+| `security.csp_base_uri_unrestricted` | CSP base-uri 미제한 |
+| `security.csp_form_action_unrestricted` | CSP form-action 미제한 |
+| `security.csp_default_src_missing` | CSP default-src 없음 |
+| `security.csp_strict_dynamic_without_nonce` | CSP strict-dynamic 에 nonce·hash 없음 |
+| `security.csp_duplicate_directives` | CSP 지시어 중복 |
+| `security.csp_insecure_scheme` | CSP 에 http: 출처 |
+| `security.csp_report_only_only` | CSP 보고 전용만 설정 |
+| `security.clickjacking_unprotected` | 클릭재킹 방어 없음 (X-Frame-Options·frame-ancestors) |
+| `security.x_frame_options_invalid` | X-Frame-Options 값 오류 |
+| `security.x_content_type_options_invalid` | X-Content-Type-Options 값 오류 |
+| `security.referrer_policy_unsafe` | 안전하지 않은 Referrer-Policy |
+| `security.cross_origin_policy_invalid` | COOP·COEP·CORP 값 오류 |
+| `security.cors_wildcard` | CORS 전체 허용 (Access-Control-Allow-Origin: *) |
+| `security.hpkp` | 폐기된 HPKP 헤더 |
+| `security.p3p` | 폐기된 P3P 정책 |
+| `security.cookie_samesite_invalid` | 쿠키 SameSite 값 오류 |
+| `security.session_cookie_flags` | 세션·CSRF 쿠키 보호 속성 누락 |
+| `security.cookie_prefix_invalid` | __Host-·__Secure- 쿠키 접두사 오류 |
+| `security.cookie_syntax_invalid` | Set-Cookie 문법 오류 |
+| `security.sri_invalid` | integrity 속성 오류 |
+| `security.protocol_relative_urls` | 프로토콜 상대 URL (//) |
+| `security.change_password_url` | 비밀번호 변경 URL (/.well-known/change-password) |
 | `performance.static_asset_cache` | 정적 리소스 Cache-Control |
 | `performance.dom_size` | DOM 크기 |
 | `performance.third_party_scripts` | 서드파티 스크립트 호스트 |
@@ -545,6 +575,16 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `meta.repeated_terms` | title·description 반복 단어 |
 | `meta.mobile_site_canonical` | 모바일 사이트 → 데스크톱 canonical |
 | `meta.bing_site_auth_file` | Bing 사이트 인증 파일 (/BingSiteAuth.xml) |
+| `meta.x_ua_compatible` | X-UA-Compatible (IE 전용) |
+| `meta.bom` | BOM 으로 시작하는 문서 |
+| `meta.charset_not_utf8` | UTF-8 이 아닌 문자 인코딩 |
+| `meta.charset_late` | 늦게 선언된 charset (1024바이트 밖·head 첫 요소 아님) |
+| `meta.charset_duplicate` | charset 선언 중복 |
+| `meta.viewport_invalid` | viewport 값 오류 |
+| `meta.theme_color_invalid` | theme-color 값 오류 |
+| `meta.manifest_name_length` | manifest name·short_name 길이 |
+| `meta.manifest_file_extension` | manifest 확장자 (.webmanifest) |
+| `meta.manifest_start_url_scope` | manifest start_url 범위 오류 |
 | `structured_data.hreflang_reciprocal` | hreflang 상호 참조 |
 | `structured_data.unknown_types` | schema.org 에 없는 @type |
 | `structured_data.rdfa` | RDFa |
@@ -576,6 +616,8 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `performance.large_images` | 큰 이미지 파일 (500KB 초과) |
 | `performance.unminified_css` | 압축(minify)되지 않은 CSS |
 | `performance.large_gifs` | 큰 GIF 이미지 (100KB 초과) |
+| `performance.cache_control_conflict` | Cache-Control 지시어 충돌·오류 |
+| `performance.vary_accept_encoding_missing` | 압축 응답에 Vary: Accept-Encoding 없음 |
 | `site.pages_sampled` | 표본 페이지 수집 |
 | `site.failed_pages` | 표본 중 2xx 아닌 페이지 |
 | `site.duplicate_titles` | 페이지 간 중복 title |
@@ -598,3 +640,12 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `transport.hosting_subdomain` | 호스팅 제공 기본 도메인 (github.io 등) |
 | `transport.redirect_hops_excess` | 리다이렉트 5회 초과·루프 |
 | `transport.redirect_chain_robots_blocked` | 리다이렉트 경유 URL robots 차단 |
+| `transport.hsts_invalid` | HSTS 헤더 형식 오류 |
+| `transport.hsts_max_age_short` | HSTS max-age 6개월 미만 |
+| `transport.hsts_preload_ineligible` | HSTS preload 요건 미충족 |
+| `transport.https_to_http_redirect` | https 에서 http 로 하향 리다이렉트 |
+| `transport.content_type_invalid` | Content-Type 헤더 누락·오류 |
+| `transport.security_txt_expired` | security.txt 만료 |
+| `transport.security_txt_invalid` | security.txt 형식 위반 |
+| `transport.security_txt_signed` | security.txt 전자서명 |
+| `transport.security_txt_canonical_mismatch` | security.txt Canonical 에 실제 URL 없음 |

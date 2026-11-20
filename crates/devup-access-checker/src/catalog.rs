@@ -704,6 +704,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "파라미터가 많은 내부 링크 (3개 이상)",
     ),
     (
+        "content.button_type_missing",
+        Content,
+        "폼 안의 type 없는 button (submit 으로 동작)",
+    ),
+    (
         "performance.render_blocking_scripts",
         Performance,
         "head 렌더링 차단 스크립트 (async/defer 없음)",
@@ -1208,6 +1213,7 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
     ("trust.social_links", Trust, "SNS 링크"),
     ("trust.business_number", Trust, "사업자등록번호 표기"),
     ("trust.copyright_year", Trust, "저작권 연도 표기"),
+    ("trust.gpc", Trust, "Global Privacy Control (gpc.json)"),
     ("meta.bing_site_verification", Meta, "Bing 웹마스터 인증"),
     ("meta.amphtml", Meta, "AMP 링크 (rel=amphtml)"),
     (
@@ -1292,6 +1298,130 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "security.deprecated_headers",
         Security,
         "폐기된 응답 헤더 (X-XSS-Protection·Expect-CT 등)",
+    ),
+    ("security.csp_meta", Security, "meta 태그 CSP"),
+    (
+        "security.csp_unsafe_inline",
+        Security,
+        "CSP script-src 'unsafe-inline' 허용",
+    ),
+    (
+        "security.csp_unsafe_eval",
+        Security,
+        "CSP 'unsafe-eval' 허용",
+    ),
+    (
+        "security.csp_broad_script_source",
+        Security,
+        "CSP script-src 과다 허용 (*·https: 등)",
+    ),
+    (
+        "security.csp_object_src_unrestricted",
+        Security,
+        "CSP object-src 미제한",
+    ),
+    (
+        "security.csp_unsafe_inline_style",
+        Security,
+        "CSP style-src 'unsafe-inline' 허용",
+    ),
+    (
+        "security.csp_base_uri_unrestricted",
+        Security,
+        "CSP base-uri 미제한",
+    ),
+    (
+        "security.csp_form_action_unrestricted",
+        Security,
+        "CSP form-action 미제한",
+    ),
+    (
+        "security.csp_default_src_missing",
+        Security,
+        "CSP default-src 없음",
+    ),
+    (
+        "security.csp_strict_dynamic_without_nonce",
+        Security,
+        "CSP strict-dynamic 에 nonce·hash 없음",
+    ),
+    (
+        "security.csp_duplicate_directives",
+        Security,
+        "CSP 지시어 중복",
+    ),
+    (
+        "security.csp_insecure_scheme",
+        Security,
+        "CSP 에 http: 출처",
+    ),
+    (
+        "security.csp_report_only_only",
+        Security,
+        "CSP 보고 전용만 설정",
+    ),
+    (
+        "security.clickjacking_unprotected",
+        Security,
+        "클릭재킹 방어 없음 (X-Frame-Options·frame-ancestors)",
+    ),
+    (
+        "security.x_frame_options_invalid",
+        Security,
+        "X-Frame-Options 값 오류",
+    ),
+    (
+        "security.x_content_type_options_invalid",
+        Security,
+        "X-Content-Type-Options 값 오류",
+    ),
+    (
+        "security.referrer_policy_unsafe",
+        Security,
+        "안전하지 않은 Referrer-Policy",
+    ),
+    (
+        "security.cross_origin_policy_invalid",
+        Security,
+        "COOP·COEP·CORP 값 오류",
+    ),
+    (
+        "security.cors_wildcard",
+        Security,
+        "CORS 전체 허용 (Access-Control-Allow-Origin: *)",
+    ),
+    ("security.hpkp", Security, "폐기된 HPKP 헤더"),
+    ("security.p3p", Security, "폐기된 P3P 정책"),
+    (
+        "security.cookie_samesite_invalid",
+        Security,
+        "쿠키 SameSite 값 오류",
+    ),
+    (
+        "security.session_cookie_flags",
+        Security,
+        "세션·CSRF 쿠키 보호 속성 누락",
+    ),
+    (
+        "security.cookie_prefix_invalid",
+        Security,
+        "__Host-·__Secure- 쿠키 접두사 오류",
+    ),
+    (
+        "security.cookie_syntax_invalid",
+        Security,
+        "Set-Cookie 문법 오류",
+    ),
+    ("security.sri_invalid", Security, "integrity 속성 오류"),
+    (
+        "security.protocol_relative_urls",
+        Security,
+        "프로토콜 상대 URL (//)",
+    ),
+    (
+        "security.change_password_url",
+        Security,
+        "비밀번호 변경 URL (/.well-known/change-password)",
     ),
     (
         "performance.static_asset_cache",
@@ -1564,6 +1694,32 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Meta,
         "Bing 사이트 인증 파일 (/BingSiteAuth.xml)",
     ),
+    ("meta.x_ua_compatible", Meta, "X-UA-Compatible (IE 전용)"),
+    ("meta.bom", Meta, "BOM 으로 시작하는 문서"),
+    ("meta.charset_not_utf8", Meta, "UTF-8 이 아닌 문자 인코딩"),
+    (
+        "meta.charset_late",
+        Meta,
+        "늦게 선언된 charset (1024바이트 밖·head 첫 요소 아님)",
+    ),
+    ("meta.charset_duplicate", Meta, "charset 선언 중복"),
+    ("meta.viewport_invalid", Meta, "viewport 값 오류"),
+    ("meta.theme_color_invalid", Meta, "theme-color 값 오류"),
+    (
+        "meta.manifest_name_length",
+        Meta,
+        "manifest name·short_name 길이",
+    ),
+    (
+        "meta.manifest_file_extension",
+        Meta,
+        "manifest 확장자 (.webmanifest)",
+    ),
+    (
+        "meta.manifest_start_url_scope",
+        Meta,
+        "manifest start_url 범위 오류",
+    ),
     (
         "structured_data.hreflang_reciprocal",
         StructuredData,
@@ -1703,6 +1859,16 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Performance,
         "큰 GIF 이미지 (100KB 초과)",
     ),
+    (
+        "performance.cache_control_conflict",
+        Performance,
+        "Cache-Control 지시어 충돌·오류",
+    ),
+    (
+        "performance.vary_accept_encoding_missing",
+        Performance,
+        "압축 응답에 Vary: Accept-Encoding 없음",
+    ),
     ("site.pages_sampled", Site, "표본 페이지 수집"),
     ("site.failed_pages", Site, "표본 중 2xx 아닌 페이지"),
     ("site.duplicate_titles", Site, "페이지 간 중복 title"),
@@ -1776,6 +1942,47 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "transport.redirect_chain_robots_blocked",
         Transport,
         "리다이렉트 경유 URL robots 차단",
+    ),
+    ("transport.hsts_invalid", Transport, "HSTS 헤더 형식 오류"),
+    (
+        "transport.hsts_max_age_short",
+        Transport,
+        "HSTS max-age 6개월 미만",
+    ),
+    (
+        "transport.hsts_preload_ineligible",
+        Transport,
+        "HSTS preload 요건 미충족",
+    ),
+    (
+        "transport.https_to_http_redirect",
+        Transport,
+        "https 에서 http 로 하향 리다이렉트",
+    ),
+    (
+        "transport.content_type_invalid",
+        Transport,
+        "Content-Type 헤더 누락·오류",
+    ),
+    (
+        "transport.security_txt_expired",
+        Transport,
+        "security.txt 만료",
+    ),
+    (
+        "transport.security_txt_invalid",
+        Transport,
+        "security.txt 형식 위반",
+    ),
+    (
+        "transport.security_txt_signed",
+        Transport,
+        "security.txt 전자서명",
+    ),
+    (
+        "transport.security_txt_canonical_mismatch",
+        Transport,
+        "security.txt Canonical 에 실제 URL 없음",
     ),
 ];
 

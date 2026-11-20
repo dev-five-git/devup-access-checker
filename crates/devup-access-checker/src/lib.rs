@@ -27,6 +27,7 @@ mod robots;
 mod rules;
 mod schema_types;
 mod search;
+mod sec;
 mod signals;
 mod sitemap;
 mod spec;
@@ -756,13 +757,26 @@ impl Checker {
                         .await,
                 )
             };
-            let ((feed, bing, not_found_chain, indexnow), (llms_subpath, agent_card, robots_chain)) = tokio::join!(
+            let change_password = async {
+                let url = at("/.well-known/change-password");
+                Some(fetch::redirect_chain(&opts.user_agent, opts.probe_timeout, &url, 0).await)
+            };
+            let gpc_url = at("/.well-known/gpc.json");
+            let gpc = fetch::probe_file(&probe, &gpc_url, Json);
+            let (
+                (feed, bing, not_found_chain, indexnow),
+                (llms_subpath, agent_card, robots_chain),
+                (change_password, gpc),
+            ) = tokio::join!(
                 async { tokio::join!(feed, bing, not_found_chain, indexnow) },
                 async { tokio::join!(llms_subpath, agent_card, robots_chain) },
+                async { tokio::join!(change_password, gpc) },
             );
             checks::SearchProbes {
                 llms_subpath,
                 agent_card: Some(agent_card),
+                change_password,
+                gpc: Some(gpc),
                 robots_chain,
                 feed,
                 bing_site_auth: Some(bing),

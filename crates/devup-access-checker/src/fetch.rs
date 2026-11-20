@@ -118,6 +118,10 @@ pub struct Page {
     pub version: String,
     /// 최종 연결의 TLS 서버 인증서 (https 일 때)
     pub certificate: Option<CertInfo>,
+    /// 원문이 UTF-8 BOM(EF BB BF)으로 시작
+    pub bom: bool,
+    /// 원문에서 첫 `<meta … charset` 이 끝나는 바이트 위치
+    pub meta_charset_offset: Option<usize>,
 }
 
 /// 대상 페이지용 클라이언트: 인증서 확인을 위해 TLS 정보를 함께 받는다.
@@ -194,7 +198,11 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
         buf.len()
     };
     let body = decode_body(&buf, &headers);
+    static CHARSET_META: LazyLock<regex::bytes::Regex> =
+        LazyLock::new(|| regex::bytes::Regex::new(r"(?i)<meta[^>]*?charset").unwrap());
     Ok(Page {
+        bom: buf.starts_with(&[0xEF, 0xBB, 0xBF]),
+        meta_charset_offset: CHARSET_META.find(&buf).map(|m| m.end()),
         status,
         final_url,
         headers,

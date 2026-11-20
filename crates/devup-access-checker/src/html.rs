@@ -95,6 +95,7 @@ pub struct PageFacts {
     pub rules: crate::rules::RuleFacts,
     pub spec: crate::spec::SpecFacts,
     pub search: crate::search::SearchFacts,
+    pub sec: crate::sec::SecFacts,
     /// 신뢰·법적 정보
     pub trust: crate::trust::TrustFacts,
 }
@@ -366,6 +367,7 @@ pub fn extract(html: &str, page_url: &Url) -> PageFacts {
     f.rules = crate::rules::extract(&doc, html, page_url);
     f.spec = crate::spec::extract(&doc);
     f.search = crate::search::extract(&doc, base);
+    f.sec = crate::sec::extract(&doc, base);
     f
 }
 
