@@ -1,6 +1,6 @@
 [package]
 name = "devup-access-checker-cli"
-version = "0.1.0"
+version = "0.1.1"
 description = "CLI that checks SEO, GEO and web accessibility signals of a URL"
 edition.workspace = true
 rust-version.workspace = true

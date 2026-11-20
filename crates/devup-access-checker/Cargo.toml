@@ -1,6 +1,6 @@
 [package]
 name = "devup-access-checker"
-version = "0.1.0"
+version = "0.1.1"
 description = "Collects SEO, GEO and web accessibility signals of a web page and reports what is present or missing"
 edition.workspace = true
 rust-version.workspace = true
