@@ -1,4 +1,4 @@
-//! schema.org 타입 이름 목록 (https://schema.org/version/latest/schemaorg-current-https-types.csv).
+//! schema.org 타입 이름 목록 (<https://schema.org/version/latest/schemaorg-current-https-types.csv>).
 //! `scripts/check_coverage.py` 가 최신 목록과 다시 대조한다. 네트워크 접근 없음.
 
 /// 정렬된 타입 이름. 이진 탐색으로 찾는다.
