@@ -44,6 +44,8 @@ pub struct CssFacts {
     pub reduced_motion: bool,
     /// `text-align: justify` 선언 수
     pub justify: usize,
+    /// `text-decoration: blink` 선언 수
+    pub blink: usize,
 }
 
 impl CssFacts {
@@ -59,6 +61,7 @@ impl CssFacts {
         self.animations += other.animations;
         self.reduced_motion |= other.reduced_motion;
         self.justify += other.justify;
+        self.blink += other.blink;
     }
 }
 
@@ -79,6 +82,7 @@ pub fn analyze(css: &str) -> CssFacts {
             .count(),
         reduced_motion: css.to_ascii_lowercase().contains("prefers-reduced-motion"),
         justify: JUSTIFY.find_iter(&css).count(),
+        blink: crate::aria::css_blink(&css),
         ..Default::default()
     };
     for c in FONT_FACE.captures_iter(&css) {
@@ -114,6 +118,7 @@ mod tests {
                 animations: 0,
                 reduced_motion: false,
                 justify: 0,
+                blink: 0,
             }
         );
     }

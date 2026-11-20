@@ -343,6 +343,8 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `content.unencoded_link_urls` | 퍼센트 인코딩 안 된 링크 URL (공백·비ASCII) |
 | `content.outbound_link_qualifiers` | 외부 링크 rel (sponsored·ugc·nofollow) |
 | `content.underscore_url_paths` | 밑줄로 단어를 구분한 URL |
+| `content.linked_documents` | 비HTML 문서 링크 (PDF·HWP·Office) |
+| `content.bidi_control_chars` | 본문의 양방향 제어 문자 |
 | `performance.render_blocking_scripts` | head 렌더링 차단 스크립트 (async/defer 없음) |
 | `performance.head_stylesheets` | head 외부 스타일시트 |
 | `performance.preconnect` | preconnect / dns-prefetch |
@@ -452,6 +454,43 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `accessibility.obsolete_attributes` | 폐기된 HTML 속성 (align·bgcolor·border 등) |
 | `accessibility.onfocus_navigation` | 초점만 받아도 이동·제출하는 onfocus |
 | `accessibility.video_audio_description_missing` | 음성 해설 트랙 없는 영상 |
+| `accessibility.statement_link` | 접근성 성명(정책) 링크 |
+| `accessibility.media_controls_missing` | 기본 컨트롤 없는 video·audio |
+| `accessibility.aria_role_redundant` | 암묵 역할과 같은 명시 role |
+| `accessibility.aria_role_not_allowed` | 요소에 허용되지 않는 role |
+| `accessibility.aria_attr_on_prohibited_element` | aria-* 를 쓸 수 없는 요소의 aria 속성 |
+| `accessibility.aria_attr_not_allowed_for_role` | 역할에 허용되지 않는 aria-* 속성 |
+| `accessibility.aria_html_attr_conflict` | HTML 속성과 충돌하는 aria-* |
+| `accessibility.aria_html_attr_redundant` | HTML 속성과 중복된 aria-* |
+| `accessibility.aria_deprecated_attr` | 폐기된 ARIA 속성 (aria-grabbed·aria-dropeffect) |
+| `accessibility.presentational_children_roles` | 자식이 무시되는 역할 안의 의미 요소 |
+| `accessibility.presentation_semantic_children` | role=presentation 인데 의미 구조를 가진 표·목록 |
+| `accessibility.duplicate_landmark_names` | 같은 역할·같은 이름의 랜드마크 |
+| `accessibility.landmark_role_unnamed` | 이름 없는 region·application |
+| `accessibility.activedescendant_unfocusable` | 초점을 받을 수 없는 aria-activedescendant 소유자 |
+| `accessibility.combobox_pattern_invalid` | 잘못된 combobox 패턴 |
+| `accessibility.tabbable_non_interactive` | 역할 없이 tabindex 로 초점을 받는 요소 |
+| `accessibility.iframe_tabindex_negative` | tabindex=-1 로 탭 순서에서 빠진 iframe |
+| `accessibility.empty_labels` | 내용 없는 label |
+| `accessibility.label_for_not_control` | 입력 요소가 아닌 대상을 가리키는 label[for] |
+| `accessibility.placeholder_only_label` | placeholder 외에 보이는 레이블이 없는 입력 |
+| `accessibility.form_submit_missing` | 제출 버튼 없는 form |
+| `accessibility.decorative_img_conflict` | 장식 표시가 충돌하는 이미지 |
+| `accessibility.alt_redundant_with_text` | 링크 텍스트와 중복된 이미지 alt |
+| `accessibility.adjacent_duplicate_links` | 같은 URL 로 가는 연속 링크 |
+| `accessibility.figure_unlabeled` | 캡션·이름 없는 figure |
+| `accessibility.canvas_fallback_missing` | 대체 콘텐츠 없는 canvas |
+| `accessibility.redundant_title_attr` | 텍스트와 같은 title 속성 |
+| `accessibility.broken_fragment_links` | 대상이 없는 같은 페이지 링크 (건너뛰기 링크 포함) |
+| `accessibility.mouse_only_handlers` | 키보드 대응 없는 마우스 이벤트 |
+| `accessibility.css_blink` | CSS text-decoration: blink |
+| `accessibility.xml_lang_without_lang` | lang 없는 xml:lang·불일치 |
+| `accessibility.dir_invalid` | 잘못된 dir 값 |
+| `accessibility.rtl_dir_missing` | RTL 언어인데 dir=rtl 없음 |
+| `accessibility.css_direction` | CSS 로 지정한 글 방향 (direction·unicode-bidi) |
+| `accessibility.bdo_without_dir` | dir 없는(또는 auto) bdo |
+| `accessibility.translate_invalid` | 잘못된 translate 값 |
+| `accessibility.ruby_without_rt` | rt 없는 ruby |
 | `trust.privacy_policy` | 개인정보처리방침 링크 |
 | `trust.terms` | 이용약관 링크 |
 | `trust.phone` | 전화번호 링크 (tel:) |
@@ -630,6 +669,9 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `meta.title_script_mismatch` | title 과 본문의 문자 체계 불일치 |
 | `meta.apple_app_site_association_valid` | AASA 파일 요건 위반 |
 | `meta.apple_itunes_app_valid` | apple-itunes-app 형식 오류 |
+| `meta.bom_in_content` | 본문 중간의 BOM (U+FEFF) |
+| `meta.xml_declaration` | text/html 문서의 XML 선언 |
+| `meta.content_language_meta` | 폐기된 Content-Language meta |
 | `structured_data.hreflang_reciprocal` | hreflang 상호 참조 |
 | `structured_data.unknown_types` | schema.org 에 없는 @type |
 | `structured_data.rdfa` | RDFa |
@@ -653,6 +695,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `structured_data.website_duplicate` | WebSite 구조화 데이터 중복 |
 | `structured_data.site_name_mismatch` | WebSite.name 과 og:site_name 불일치 |
 | `structured_data.is_accessible_for_free` | isAccessibleForFree (유료 콘텐츠 표시) |
+| `structured_data.accessibility_metadata` | schema.org 접근성 메타데이터 |
 | `performance.external_css` | 외부 CSS 분석 |
 | `performance.font_face_without_display` | font-display 없는 @font-face |
 | `performance.page_weight` | 페이지 리소스 무게 |

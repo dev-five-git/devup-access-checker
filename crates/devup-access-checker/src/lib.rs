@@ -13,6 +13,7 @@
 //! ```
 
 mod a11y;
+mod aria;
 mod catalog;
 mod checks;
 mod css;

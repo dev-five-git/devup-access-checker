@@ -1558,6 +1558,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     geo_spec_checks(&mut o, i, &robots);
     security_spec_checks(&mut o, i);
     google_spec_checks(&mut o, i, &robots);
+    aria_spec_checks(&mut o, i);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -7464,6 +7465,393 @@ fn google_spec_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) 
     );
 }
 
+/// ARIA in HTML·IBM Equal Access·HTML_CodeSniffer·WAVE·W3C i18n·EN 301 549 대조 항목.
+fn aria_spec_checks(o: &mut Out, i: &Inputs) {
+    use Category::*;
+    let f = i.facts;
+    let a = &f.aria;
+    let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
+    let blink = a.inline_blink
+        + f.extra.inline_css.blink
+        + i.extended
+            .external_css
+            .as_ref()
+            .map_or(0, |c| c.facts.blink);
+    let rtl = match f.lang.as_deref() {
+        Some(l) if crate::aria::is_rtl_lang(l) => Presence::from_bool(!a.html_dir_rtl),
+        _ => Presence::NotApplicable,
+    };
+    let mut meta: Vec<String> = a.accessibility_metadata.clone();
+    for ob in &f.extra.ld_objects {
+        for k in &ob.keys {
+            if (k.starts_with("accessibility") || k.starts_with("accessMode")) && !meta.contains(k)
+            {
+                meta.push(k.clone());
+            }
+        }
+    }
+    let xml_decl = i
+        .page
+        .body
+        .trim_start_matches('\u{feff}')
+        .trim_start()
+        .get(..5)
+        .is_some_and(|h| h.eq_ignore_ascii_case("<?xml"));
+    o.push(
+        "accessibility.statement_link",
+        Accessibility,
+        "접근성 성명(정책) 링크",
+        Presence::from_bool(!a.statement_links.is_empty()),
+        list(&a.statement_links),
+        Some("EN 301 549 12.1.1·EU 웹 접근성 지침 제7조".into()),
+    );
+    o.push(
+        "accessibility.media_controls_missing",
+        Accessibility,
+        "기본 컨트롤 없는 video·audio",
+        count_presence(a.media_without_controls, a.media),
+        Some(json!(a.media_without_controls)),
+        Some("EN 301 549 7.3. 자체 플레이어도 포함되므로 controls 속성 기준".into()),
+    );
+    o.push(
+        "accessibility.aria_role_redundant",
+        Accessibility,
+        "암묵 역할과 같은 명시 role",
+        Presence::from_bool(!a.role_redundant.is_empty()),
+        list(&a.role_redundant),
+        Some("ARIA in HTML".into()),
+    );
+    o.push(
+        "accessibility.aria_role_not_allowed",
+        Accessibility,
+        "요소에 허용되지 않는 role",
+        Presence::from_bool(!a.role_not_allowed.is_empty()),
+        list(&a.role_not_allowed),
+        Some("ARIA in HTML (역할 불가·자기 역할만 허용하는 요소)".into()),
+    );
+    o.push(
+        "accessibility.aria_attr_on_prohibited_element",
+        Accessibility,
+        "aria-* 를 쓸 수 없는 요소의 aria 속성",
+        Presence::from_bool(!a.aria_on_prohibited.is_empty()),
+        list(&a.aria_on_prohibited),
+        Some("ARIA in HTML".into()),
+    );
+    o.push(
+        "accessibility.aria_attr_not_allowed_for_role",
+        Accessibility,
+        "역할에 허용되지 않는 aria-* 속성",
+        Presence::from_bool(!a.attr_not_for_role.is_empty()),
+        list(&a.attr_not_for_role),
+        Some("WAI-ARIA 1.2 역할별 지원 속성 (주요 속성)".into()),
+    );
+    o.push(
+        "accessibility.aria_html_attr_conflict",
+        Accessibility,
+        "HTML 속성과 충돌하는 aria-*",
+        Presence::from_bool(!a.attr_conflict.is_empty()),
+        list(&a.attr_conflict),
+        Some("ARIA in HTML MUST NOT 규칙".into()),
+    );
+    o.push(
+        "accessibility.aria_html_attr_redundant",
+        Accessibility,
+        "HTML 속성과 중복된 aria-*",
+        Presence::from_bool(!a.attr_redundant.is_empty()),
+        list(&a.attr_redundant),
+        Some("ARIA in HTML SHOULD NOT 규칙".into()),
+    );
+    o.push(
+        "accessibility.aria_deprecated_attr",
+        Accessibility,
+        "폐기된 ARIA 속성 (aria-grabbed·aria-dropeffect)",
+        Presence::from_bool(!a.deprecated_attrs.is_empty()),
+        list(&a.deprecated_attrs),
+        None,
+    );
+    o.push(
+        "accessibility.presentational_children_roles",
+        Accessibility,
+        "자식이 무시되는 역할 안의 의미 요소",
+        Presence::from_bool(!a.presentational_children.is_empty()),
+        list(&a.presentational_children),
+        Some("button·img 등은 자식의 의미를 전달하지 않음".into()),
+    );
+    o.push(
+        "accessibility.presentation_semantic_children",
+        Accessibility,
+        "role=presentation 인데 의미 구조를 가진 표·목록",
+        Presence::from_bool(!a.presentation_semantic.is_empty()),
+        list(&a.presentation_semantic),
+        None,
+    );
+    o.push(
+        "accessibility.duplicate_landmark_names",
+        Accessibility,
+        "같은 역할·같은 이름의 랜드마크",
+        Presence::from_bool(!a.duplicate_landmark_names.is_empty()),
+        list(&a.duplicate_landmark_names),
+        None,
+    );
+    o.push(
+        "accessibility.landmark_role_unnamed",
+        Accessibility,
+        "이름 없는 region·application",
+        Presence::from_bool(a.unnamed_region_app > 0),
+        Some(json!(a.unnamed_region_app)),
+        None,
+    );
+    o.push(
+        "accessibility.activedescendant_unfocusable",
+        Accessibility,
+        "초점을 받을 수 없는 aria-activedescendant 소유자",
+        Presence::from_bool(a.activedescendant_unfocusable > 0),
+        Some(json!(a.activedescendant_unfocusable)),
+        None,
+    );
+    o.push(
+        "accessibility.combobox_pattern_invalid",
+        Accessibility,
+        "잘못된 combobox 패턴",
+        Presence::from_bool(!a.combobox_invalid.is_empty()),
+        list(&a.combobox_invalid),
+        None,
+    );
+    o.push(
+        "accessibility.tabbable_non_interactive",
+        Accessibility,
+        "역할 없이 tabindex 로 초점을 받는 요소",
+        Presence::from_bool(a.tabbable_non_interactive > 0),
+        Some(json!(a.tabbable_non_interactive)),
+        Some("스크롤 영역처럼 의도된 경우도 포함".into()),
+    );
+    o.push(
+        "accessibility.iframe_tabindex_negative",
+        Accessibility,
+        "tabindex=-1 로 탭 순서에서 빠진 iframe",
+        count_presence(a.iframe_tabindex_negative, a.iframes),
+        Some(json!(a.iframe_tabindex_negative)),
+        None,
+    );
+    o.push(
+        "accessibility.empty_labels",
+        Accessibility,
+        "내용 없는 label",
+        count_presence(a.empty_labels, a.labels),
+        Some(json!(a.empty_labels)),
+        None,
+    );
+    o.push(
+        "accessibility.label_for_not_control",
+        Accessibility,
+        "입력 요소가 아닌 대상을 가리키는 label[for]",
+        Presence::from_bool(!a.label_for_not_control.is_empty()),
+        list(&a.label_for_not_control),
+        None,
+    );
+    o.push(
+        "accessibility.placeholder_only_label",
+        Accessibility,
+        "placeholder 외에 보이는 레이블이 없는 입력",
+        Presence::from_bool(a.placeholder_only > 0),
+        Some(json!(a.placeholder_only)),
+        None,
+    );
+    o.push(
+        "accessibility.form_submit_missing",
+        Accessibility,
+        "제출 버튼 없는 form",
+        count_presence(a.forms_without_submit, a.forms_with_text),
+        Some(json!(a.forms_without_submit)),
+        Some("KWCAG·WCAG 3.2.2 (H32)".into()),
+    );
+    o.push(
+        "accessibility.decorative_img_conflict",
+        Accessibility,
+        "장식 표시가 충돌하는 이미지",
+        Presence::from_bool(a.decorative_conflict > 0),
+        Some(json!(a.decorative_conflict)),
+        Some("alt=\"\" 인데 title·aria-label, 또는 role=none 인데 alt".into()),
+    );
+    o.push(
+        "accessibility.alt_redundant_with_text",
+        Accessibility,
+        "링크 텍스트와 중복된 이미지 alt",
+        Presence::from_bool(a.alt_redundant_with_text > 0),
+        Some(json!(a.alt_redundant_with_text)),
+        None,
+    );
+    o.push(
+        "accessibility.adjacent_duplicate_links",
+        Accessibility,
+        "같은 URL 로 가는 연속 링크",
+        Presence::from_bool(a.adjacent_duplicate_links > 0),
+        Some(json!(a.adjacent_duplicate_links)),
+        None,
+    );
+    o.push(
+        "accessibility.figure_unlabeled",
+        Accessibility,
+        "캡션·이름 없는 figure",
+        count_presence(a.figures_unlabeled, a.figures),
+        Some(json!(a.figures_unlabeled)),
+        None,
+    );
+    o.push(
+        "accessibility.canvas_fallback_missing",
+        Accessibility,
+        "대체 콘텐츠 없는 canvas",
+        count_presence(a.canvases_without_fallback, a.canvases),
+        Some(json!(a.canvases_without_fallback)),
+        None,
+    );
+    o.push(
+        "accessibility.redundant_title_attr",
+        Accessibility,
+        "텍스트와 같은 title 속성",
+        Presence::from_bool(a.redundant_title > 0),
+        Some(json!(a.redundant_title)),
+        None,
+    );
+    o.push(
+        "accessibility.broken_fragment_links",
+        Accessibility,
+        "대상이 없는 같은 페이지 링크 (건너뛰기 링크 포함)",
+        Presence::from_bool(!a.broken_fragment_links.is_empty()),
+        (!a.broken_fragment_links.is_empty()).then(
+            || json!({ "links": a.broken_fragment_links, "brokenSkipLink": a.broken_skip_link }),
+        ),
+        None,
+    );
+    o.push(
+        "accessibility.mouse_only_handlers",
+        Accessibility,
+        "키보드 대응 없는 마우스 이벤트",
+        Presence::from_bool(a.mouse_only_handlers > 0),
+        Some(json!(a.mouse_only_handlers)),
+        Some("onmouseover·onmouseout·onmousedown·ondblclick 등".into()),
+    );
+    o.push(
+        "accessibility.css_blink",
+        Accessibility,
+        "CSS text-decoration: blink",
+        Presence::from_bool(blink > 0),
+        Some(json!(blink)),
+        None,
+    );
+    o.push(
+        "accessibility.xml_lang_without_lang",
+        Accessibility,
+        "lang 없는 xml:lang·불일치",
+        Presence::from_bool(!a.xml_lang_issues.is_empty()),
+        list(&a.xml_lang_issues),
+        None,
+    );
+    o.push(
+        "accessibility.dir_invalid",
+        Accessibility,
+        "잘못된 dir 값",
+        Presence::from_bool(!a.dir_invalid.is_empty()),
+        list(&a.dir_invalid),
+        None,
+    );
+    o.push(
+        "accessibility.rtl_dir_missing",
+        Accessibility,
+        "RTL 언어인데 dir=rtl 없음",
+        rtl,
+        Some(json!({ "htmlDirRtl": a.html_dir_rtl, "anyDirRtl": a.any_dir_rtl })),
+        None,
+    );
+    o.push(
+        "accessibility.css_direction",
+        Accessibility,
+        "CSS 로 지정한 글 방향 (direction·unicode-bidi)",
+        Presence::from_bool(a.inline_direction > 0),
+        Some(json!(a.inline_direction)),
+        Some("W3C i18n: dir 속성 사용 권장".into()),
+    );
+    o.push(
+        "accessibility.bdo_without_dir",
+        Accessibility,
+        "dir 없는(또는 auto) bdo",
+        Presence::from_bool(a.bdo_without_dir > 0),
+        Some(json!(a.bdo_without_dir)),
+        None,
+    );
+    o.push(
+        "accessibility.translate_invalid",
+        Accessibility,
+        "잘못된 translate 값",
+        Presence::from_bool(!a.translate_invalid.is_empty()),
+        list(&a.translate_invalid),
+        None,
+    );
+    o.push(
+        "accessibility.ruby_without_rt",
+        Accessibility,
+        "rt 없는 ruby",
+        Presence::from_bool(a.ruby_without_rt > 0),
+        Some(json!(a.ruby_without_rt)),
+        None,
+    );
+    o.push(
+        "content.linked_documents",
+        Content,
+        "비HTML 문서 링크 (PDF·HWP·Office)",
+        Presence::from_bool(!a.document_links.is_empty()),
+        (!a.document_links.is_empty()).then(|| {
+            json!(
+                a.document_links
+                    .iter()
+                    .map(|(k, n)| (k.clone(), *n))
+                    .collect::<std::collections::BTreeMap<_, _>>()
+            )
+        }),
+        Some("EN 301 549 10장: 문서 자체의 접근성은 확인하지 않음".into()),
+    );
+    o.push(
+        "content.bidi_control_chars",
+        Content,
+        "본문의 양방향 제어 문자",
+        Presence::from_bool(a.bidi_controls > 0),
+        Some(json!(a.bidi_controls)),
+        None,
+    );
+    o.push(
+        "structured_data.accessibility_metadata",
+        StructuredData,
+        "schema.org 접근성 메타데이터",
+        Presence::from_bool(!meta.is_empty()),
+        list(&meta),
+        Some("accessibilityFeature·accessMode 등 (EN 301 549 12.1.1)".into()),
+    );
+    o.push(
+        "meta.bom_in_content",
+        Meta,
+        "본문 중간의 BOM (U+FEFF)",
+        Presence::from_bool(a.bom_in_content > 0),
+        Some(json!(a.bom_in_content)),
+        None,
+    );
+    o.push(
+        "meta.xml_declaration",
+        Meta,
+        "text/html 문서의 XML 선언",
+        Presence::from_bool(xml_decl),
+        None,
+        None,
+    );
+    o.push(
+        "meta.content_language_meta",
+        Meta,
+        "폐기된 Content-Language meta",
+        Presence::from_bool(a.content_language_meta.is_some()),
+        a.content_language_meta.clone().map(Value::from),
+        Some("HTML 명세상 폐기, lang 속성 사용".into()),
+    );
+}
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -9791,5 +10179,49 @@ mod tests {
             p(&c, "meta.apple_app_site_association_valid"),
             Presence::Present
         );
+    }
+
+    #[test]
+    fn aria_and_i18n_items() {
+        let mut fx = Fx::failing();
+        let p = |c: &[Check], id: &str| get(c, id).presence;
+        let html = r##"<?xml version="1.0"?><html lang="ar"><head><style>a{text-decoration:blink}</style>
+<script type="application/ld+json">{"@type":"WebPage","accessibilityFeature":"alternativeText"}</script></head>
+<body><a href="#nowhere">skip</a><button role="button">b</button><a href="/accessibility">접근성</a><a href="/a.pdf">pdf</a><p>&#x202E;x</p></body></html>"##;
+        fx.page = page("https://a.com/", html);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        fx.extended.external_css = Some(ExternalCss {
+            facts: crate::css::analyze("b{text-decoration: blink}"),
+            ..Default::default()
+        });
+        let c = fx.run();
+        for id in [
+            "accessibility.statement_link",
+            "accessibility.aria_role_redundant",
+            "accessibility.css_blink",
+            "accessibility.rtl_dir_missing",
+            "content.linked_documents",
+            "content.bidi_control_chars",
+            "structured_data.accessibility_metadata",
+            "meta.xml_declaration",
+        ] {
+            assert_eq!(p(&c, id), Presence::Present, "{id}");
+        }
+        assert_eq!(get(&c, "accessibility.css_blink").value, Some(json!(2)));
+        let html = r#"<html lang="ko"><body><p>x</p></body></html>"#;
+        fx.page = page("https://a.com/", html);
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        fx.extended.external_css = None;
+        let c = fx.run();
+        assert_eq!(
+            p(&c, "accessibility.rtl_dir_missing"),
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            p(&c, "accessibility.media_controls_missing"),
+            Presence::NotApplicable
+        );
+        assert_eq!(p(&c, "meta.xml_declaration"), Presence::Missing);
+        assert_eq!(p(&c, "accessibility.statement_link"), Presence::Missing);
     }
 }

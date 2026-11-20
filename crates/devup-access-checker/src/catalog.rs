@@ -795,6 +795,16 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "밑줄로 단어를 구분한 URL",
     ),
     (
+        "content.linked_documents",
+        Content,
+        "비HTML 문서 링크 (PDF·HWP·Office)",
+    ),
+    (
+        "content.bidi_control_chars",
+        Content,
+        "본문의 양방향 제어 문자",
+    ),
+    (
         "performance.render_blocking_scripts",
         Performance,
         "head 렌더링 차단 스크립트 (async/defer 없음)",
@@ -1286,6 +1296,187 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "accessibility.video_audio_description_missing",
         Accessibility,
         "음성 해설 트랙 없는 영상",
+    ),
+    (
+        "accessibility.statement_link",
+        Accessibility,
+        "접근성 성명(정책) 링크",
+    ),
+    (
+        "accessibility.media_controls_missing",
+        Accessibility,
+        "기본 컨트롤 없는 video·audio",
+    ),
+    (
+        "accessibility.aria_role_redundant",
+        Accessibility,
+        "암묵 역할과 같은 명시 role",
+    ),
+    (
+        "accessibility.aria_role_not_allowed",
+        Accessibility,
+        "요소에 허용되지 않는 role",
+    ),
+    (
+        "accessibility.aria_attr_on_prohibited_element",
+        Accessibility,
+        "aria-* 를 쓸 수 없는 요소의 aria 속성",
+    ),
+    (
+        "accessibility.aria_attr_not_allowed_for_role",
+        Accessibility,
+        "역할에 허용되지 않는 aria-* 속성",
+    ),
+    (
+        "accessibility.aria_html_attr_conflict",
+        Accessibility,
+        "HTML 속성과 충돌하는 aria-*",
+    ),
+    (
+        "accessibility.aria_html_attr_redundant",
+        Accessibility,
+        "HTML 속성과 중복된 aria-*",
+    ),
+    (
+        "accessibility.aria_deprecated_attr",
+        Accessibility,
+        "폐기된 ARIA 속성 (aria-grabbed·aria-dropeffect)",
+    ),
+    (
+        "accessibility.presentational_children_roles",
+        Accessibility,
+        "자식이 무시되는 역할 안의 의미 요소",
+    ),
+    (
+        "accessibility.presentation_semantic_children",
+        Accessibility,
+        "role=presentation 인데 의미 구조를 가진 표·목록",
+    ),
+    (
+        "accessibility.duplicate_landmark_names",
+        Accessibility,
+        "같은 역할·같은 이름의 랜드마크",
+    ),
+    (
+        "accessibility.landmark_role_unnamed",
+        Accessibility,
+        "이름 없는 region·application",
+    ),
+    (
+        "accessibility.activedescendant_unfocusable",
+        Accessibility,
+        "초점을 받을 수 없는 aria-activedescendant 소유자",
+    ),
+    (
+        "accessibility.combobox_pattern_invalid",
+        Accessibility,
+        "잘못된 combobox 패턴",
+    ),
+    (
+        "accessibility.tabbable_non_interactive",
+        Accessibility,
+        "역할 없이 tabindex 로 초점을 받는 요소",
+    ),
+    (
+        "accessibility.iframe_tabindex_negative",
+        Accessibility,
+        "tabindex=-1 로 탭 순서에서 빠진 iframe",
+    ),
+    (
+        "accessibility.empty_labels",
+        Accessibility,
+        "내용 없는 label",
+    ),
+    (
+        "accessibility.label_for_not_control",
+        Accessibility,
+        "입력 요소가 아닌 대상을 가리키는 label[for]",
+    ),
+    (
+        "accessibility.placeholder_only_label",
+        Accessibility,
+        "placeholder 외에 보이는 레이블이 없는 입력",
+    ),
+    (
+        "accessibility.form_submit_missing",
+        Accessibility,
+        "제출 버튼 없는 form",
+    ),
+    (
+        "accessibility.decorative_img_conflict",
+        Accessibility,
+        "장식 표시가 충돌하는 이미지",
+    ),
+    (
+        "accessibility.alt_redundant_with_text",
+        Accessibility,
+        "링크 텍스트와 중복된 이미지 alt",
+    ),
+    (
+        "accessibility.adjacent_duplicate_links",
+        Accessibility,
+        "같은 URL 로 가는 연속 링크",
+    ),
+    (
+        "accessibility.figure_unlabeled",
+        Accessibility,
+        "캡션·이름 없는 figure",
+    ),
+    (
+        "accessibility.canvas_fallback_missing",
+        Accessibility,
+        "대체 콘텐츠 없는 canvas",
+    ),
+    (
+        "accessibility.redundant_title_attr",
+        Accessibility,
+        "텍스트와 같은 title 속성",
+    ),
+    (
+        "accessibility.broken_fragment_links",
+        Accessibility,
+        "대상이 없는 같은 페이지 링크 (건너뛰기 링크 포함)",
+    ),
+    (
+        "accessibility.mouse_only_handlers",
+        Accessibility,
+        "키보드 대응 없는 마우스 이벤트",
+    ),
+    (
+        "accessibility.css_blink",
+        Accessibility,
+        "CSS text-decoration: blink",
+    ),
+    (
+        "accessibility.xml_lang_without_lang",
+        Accessibility,
+        "lang 없는 xml:lang·불일치",
+    ),
+    ("accessibility.dir_invalid", Accessibility, "잘못된 dir 값"),
+    (
+        "accessibility.rtl_dir_missing",
+        Accessibility,
+        "RTL 언어인데 dir=rtl 없음",
+    ),
+    (
+        "accessibility.css_direction",
+        Accessibility,
+        "CSS 로 지정한 글 방향 (direction·unicode-bidi)",
+    ),
+    (
+        "accessibility.bdo_without_dir",
+        Accessibility,
+        "dir 없는(또는 auto) bdo",
+    ),
+    (
+        "accessibility.translate_invalid",
+        Accessibility,
+        "잘못된 translate 값",
+    ),
+    (
+        "accessibility.ruby_without_rt",
+        Accessibility,
+        "rt 없는 ruby",
     ),
     ("trust.privacy_policy", Trust, "개인정보처리방침 링크"),
     ("trust.terms", Trust, "이용약관 링크"),
@@ -1925,6 +2116,13 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         Meta,
         "apple-itunes-app 형식 오류",
     ),
+    ("meta.bom_in_content", Meta, "본문 중간의 BOM (U+FEFF)"),
+    ("meta.xml_declaration", Meta, "text/html 문서의 XML 선언"),
+    (
+        "meta.content_language_meta",
+        Meta,
+        "폐기된 Content-Language meta",
+    ),
     (
         "structured_data.hreflang_reciprocal",
         StructuredData,
@@ -2035,6 +2233,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "structured_data.is_accessible_for_free",
         StructuredData,
         "isAccessibleForFree (유료 콘텐츠 표시)",
+    ),
+    (
+        "structured_data.accessibility_metadata",
+        StructuredData,
+        "schema.org 접근성 메타데이터",
     ),
     ("performance.external_css", Performance, "외부 CSS 분석"),
     (

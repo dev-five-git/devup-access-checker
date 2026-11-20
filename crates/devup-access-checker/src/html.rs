@@ -97,6 +97,7 @@ pub struct PageFacts {
     pub search: crate::search::SearchFacts,
     pub sec: crate::sec::SecFacts,
     pub google: crate::google::GoogleFacts,
+    pub aria: crate::aria::AriaFacts,
     /// 신뢰·법적 정보
     pub trust: crate::trust::TrustFacts,
 }
@@ -370,6 +371,7 @@ pub fn extract(html: &str, page_url: &Url) -> PageFacts {
     f.search = crate::search::extract(&doc, base);
     f.sec = crate::sec::extract(&doc, base);
     f.google = crate::google::extract(&doc, html, base);
+    f.aria = crate::aria::extract(&doc, base);
     f
 }
 
