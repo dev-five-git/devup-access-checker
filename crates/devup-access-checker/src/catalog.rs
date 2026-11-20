@@ -423,6 +423,116 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         StructuredData,
         "LocalBusiness 스키마 필수 속성",
     ),
+    (
+        "structured_data.required.book",
+        StructuredData,
+        "Book 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.course",
+        StructuredData,
+        "Course 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.dataset",
+        StructuredData,
+        "Dataset 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.discussion_forum",
+        StructuredData,
+        "DiscussionForumPosting 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.education_qa",
+        StructuredData,
+        "Quiz 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.employer_rating",
+        StructuredData,
+        "EmployerAggregateRating 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.event",
+        StructuredData,
+        "Event 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.claim_review",
+        StructuredData,
+        "ClaimReview 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.image_license",
+        StructuredData,
+        "ImageObject 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.job_posting",
+        StructuredData,
+        "JobPosting 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.loyalty_program",
+        StructuredData,
+        "MemberProgram 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.math_solver",
+        StructuredData,
+        "MathSolver 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.movie",
+        StructuredData,
+        "Movie 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.product_group",
+        StructuredData,
+        "ProductGroup 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.profile_page",
+        StructuredData,
+        "ProfilePage 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.qa_page",
+        StructuredData,
+        "QAPage 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.recipe",
+        StructuredData,
+        "Recipe 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.software_app",
+        StructuredData,
+        "SoftwareApplication 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.vacation_rental",
+        StructuredData,
+        "VacationRental 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.video",
+        StructuredData,
+        "VideoObject 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.item_list",
+        StructuredData,
+        "ItemList 스키마 필수 속성",
+    ),
+    (
+        "structured_data.required.merchant_return_policy",
+        StructuredData,
+        "MerchantReturnPolicy 스키마 필수 속성",
+    ),
     ("content.heading_skip", Content, "헤딩 레벨 건너뜀"),
     ("content.internal_nofollow", Content, "내부 링크 nofollow"),
     (
@@ -574,7 +684,7 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
     (
         "accessibility.obsolete_elements",
         Accessibility,
-        "폐기된 표현 요소 (marquee·blink·font·center)",
+        "폐기된 HTML 요소 (marquee·font·center 등)",
     ),
     (
         "accessibility.new_window_links",
@@ -956,6 +1066,21 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "Trusted Types (CSP require-trusted-types-for)",
     ),
     (
+        "security.x_dns_prefetch_control",
+        Security,
+        "X-DNS-Prefetch-Control",
+    ),
+    (
+        "security.x_permitted_cross_domain_policies",
+        Security,
+        "X-Permitted-Cross-Domain-Policies",
+    ),
+    (
+        "security.info_disclosure_headers",
+        Security,
+        "버전·내부 정보를 노출하는 헤더 (OWASP 제거 권장)",
+    ),
+    (
         "performance.static_asset_cache",
         Performance,
         "정적 리소스 Cache-Control",
@@ -1134,6 +1259,11 @@ pub const CATALOG: &[(&str, Category, &str)] = &[
         "transport.client_redirect_total",
         Transport,
         "클라이언트 측 리다이렉트 수",
+    ),
+    (
+        "transport.security_txt_fields",
+        Transport,
+        "security.txt 필수 필드 (Contact·Expires)",
     ),
 ];
 

@@ -26,7 +26,14 @@ static TABLES: LazyLock<Selector> = LazyLock::new(|| sel("table"));
 static TH: LazyLock<Selector> = LazyLock::new(|| sel("th, [scope]"));
 static AUTOPLAY: LazyLock<Selector> = LazyLock::new(|| sel("video[autoplay], audio[autoplay]"));
 static TABINDEX: LazyLock<Selector> = LazyLock::new(|| sel("[tabindex]"));
-static OBSOLETE: LazyLock<Selector> = LazyLock::new(|| sel("marquee, blink, font, center"));
+/// WHATWG HTML 명세 "Obsolete features" 의 폐기 요소
+static OBSOLETE: LazyLock<Selector> = LazyLock::new(|| {
+    sel(
+        "acronym, applet, basefont, bgsound, big, blink, center, dir, font, frame, frameset, \
+         isindex, keygen, listing, marquee, menuitem, multicol, nextid, nobr, noembed, noframes, \
+         plaintext, rb, rtc, spacer, strike, tt, xmp",
+    )
+});
 static MAIN: LazyLock<Selector> = LazyLock::new(|| sel("main, [role=main]"));
 static NAV: LazyLock<Selector> = LazyLock::new(|| sel("nav, [role=navigation]"));
 static HEADER: LazyLock<Selector> = LazyLock::new(|| sel("header, [role=banner]"));

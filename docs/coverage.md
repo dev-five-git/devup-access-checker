@@ -10,6 +10,7 @@ axe-core 규칙과 Lighthouse 감사 목록은 `python scripts/check_coverage.py
 - [axe-core 규칙](#axe-core-규칙)
 - [Lighthouse](#lighthouse)
 - [Google 검색 센터](#google-검색-센터)
+- [Google 리치 결과 (구조화 데이터)](#google-리치-결과)
 - [보안 헤더 (OWASP Secure Headers)](#보안-헤더)
 - [생성형 검색(GEO)](#생성형-검색geo)
 - [확인할 수 없는 것 요약](#확인할-수-없는-것-요약)
@@ -34,7 +35,7 @@ axe-core 규칙과 Lighthouse 감사 목록은 `python scripts/check_coverage.py
 | 2.1.3 조작 가능 | — | 확인 불가: 컨트롤 크기 (렌더링) |
 | 2.1.4 문자 단축키 | `accessibility.duplicate_accesskeys` | 스크립트로 구현한 단축키 |
 | 2.2.1 응답시간 조절 | `accessibility.timed_refresh` | 스크립트 타이머·세션 만료 |
-| 2.2.2 정지 기능 제공 | `accessibility.autoplay_media` `accessibility.obsolete_elements` | 스크립트 자동 슬라이드 |
+| 2.2.2 정지 기능 제공 | `accessibility.autoplay_media` `accessibility.obsolete_elements` (WHATWG 폐기 요소 전체) | 스크립트 자동 슬라이드 |
 | 2.3.1 깜빡임과 번쩍임 사용 제한 | — | 확인 불가: 프레임 분석 필요 |
 | 2.4.1 반복 영역 건너뛰기 | `accessibility.skip_link` `accessibility.landmark_main` `accessibility.landmark_nav` `accessibility.landmark_header` `accessibility.landmark_footer` | 건너뛰기 링크가 실제로 동작하는지 (실행) |
 | 2.4.2 제목 제공 | `meta.title` `accessibility.page_title_generic` `accessibility.iframe_title_missing` `accessibility.iframe_title_duplicate` `accessibility.empty_headings` `content.h1` | 제목이 내용을 잘 설명하는지 (의미 판단) |
@@ -266,9 +267,49 @@ Lighthouse 접근성 범주는 axe-core 규칙을 그대로 씁니다. 대응 �
 | 파비콘 | `meta.favicon` `links.favicon` |
 | Core Web Vitals | 확인 불가: 렌더링 측정 |
 
+## Google 리치 결과
+
+[Google 검색 구조화 데이터 갤러리](https://developers.google.com/search/docs/appearance/structured-data/search-gallery)의 기능별 문서에 있는 "Required properties" 를 기준으로 합니다. 최상위 속성만 보며, 해당 유형이 없으면 `not_applicable` 입니다.
+
+| 기능 문서 | 항목 id / 비고 |
+|---|---|
+| article | `structured_data.required.article` (Google 은 필수 속성 없음, 권장 속성 기준) |
+| breadcrumb | `structured_data.required.breadcrumb_list` |
+| book | `structured_data.required.book` |
+| carousel | `structured_data.required.item_list` |
+| course | `structured_data.required.course` |
+| dataset | `structured_data.required.dataset` |
+| discussion-forum | `structured_data.required.discussion_forum` |
+| education-qa | `structured_data.required.education_qa` |
+| employer-rating | `structured_data.required.employer_rating` |
+| event | `structured_data.required.event` |
+| factcheck | `structured_data.required.claim_review` |
+| image-license-metadata | `structured_data.required.image_license` |
+| job-posting | `structured_data.required.job_posting` |
+| local-business | `structured_data.required.local_business` |
+| loyalty-program | `structured_data.required.loyalty_program` |
+| math-solvers | `structured_data.required.math_solver` |
+| product, merchant-listing, product-snippet | `structured_data.required.product` `structured_data.type.product` |
+| product-variants | `structured_data.required.product_group` |
+| movie | `structured_data.required.movie` |
+| organization | `structured_data.required.organization` (Google 은 필수 속성 없음, 권장 속성 기준) |
+| profile-page | `structured_data.required.profile_page` |
+| qapage | `structured_data.required.qa_page` |
+| recipe | `structured_data.required.recipe` |
+| return-policy | `structured_data.required.merchant_return_policy` |
+| software-app | `structured_data.required.software_app` |
+| speakable | `structured_data.speakable` |
+| vacation-rental | `structured_data.required.vacation_rental` |
+| video | `structured_data.required.video` |
+| review-snippet | 미적용: Review·AggregateRating 은 대개 Product 등에 중첩되어 itemReviewed 를 생략하므로 단독 판정 시 오탐 |
+| shipping-policy | 미적용: 판매자 수준 배송 설정(Merchant Center 연동)이라 페이지 단위 판정이 어려움 |
+| paywalled-content | 미적용: 유료 콘텐츠 여부를 페이지만으로 알 수 없음 |
+| carousels-beta | 해당 없음: 일부 지역 베타 |
+| intro-structured-data, sd-policies, search-gallery, generate-structured-data-with-javascript | 해당 없음: 안내 문서 |
+
 ## 보안 헤더
 
-[OWASP Secure Headers Project](https://owasp.org/www-project-secure-headers/) 권장 헤더입니다.
+[OWASP Secure Headers Project](https://owasp.org/www-project-secure-headers/)의 [권장 헤더](https://github.com/OWASP/www-project-secure-headers/blob/master/ci/headers_add.json)와 [제거 권장 헤더](https://github.com/OWASP/www-project-secure-headers/blob/master/ci/headers_remove.json) 목록입니다.
 
 | 헤더 | 항목 id |
 |---|---|
@@ -281,12 +322,17 @@ Lighthouse 접근성 범주는 axe-core 규칙을 그대로 씁니다. 대응 �
 | Cross-Origin-Opener-Policy | `security.cross_origin_opener_policy` |
 | Cross-Origin-Embedder-Policy | `security.cross_origin_embedder_policy` |
 | Cross-Origin-Resource-Policy | `security.cross_origin_resource_policy` |
+| X-DNS-Prefetch-Control | `security.x_dns_prefetch_control` |
+| X-Permitted-Cross-Domain-Policies | `security.x_permitted_cross_domain_policies` |
+| Cache-Control | `performance.cache_control` |
+| Clear-Site-Data | 해당 없음: 로그아웃 응답용 헤더라 일반 페이지에는 쓰지 않음 |
+| 제거 권장 헤더 (88개) | `security.server_header` `security.x_powered_by` `security.info_disclosure_headers` (나머지 86개 전체) |
 | 노출하지 말아야 할 헤더 (Server, X-Powered-By) | `security.server_header` `security.x_powered_by` |
 | 쿠키 Secure·HttpOnly | `security.insecure_cookies` |
 | 하위 리소스 무결성 (SRI) | `security.sri_missing` |
 | 안전한 폼 전송 | `security.insecure_form_action` |
 | 새 창 링크 opener | `security.target_blank_noopener` |
-| security.txt | `transport.security_txt` |
+| security.txt | `transport.security_txt` `transport.security_txt_fields` (RFC 9116 필수 Contact·Expires) |
 | Trusted Types (CSP) | `security.trusted_types` |
 | X-XSS-Protection | 의도적으로 제외: 폐기된 헤더 (OWASP 도 사용 중단 권고) |
 

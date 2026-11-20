@@ -63,6 +63,106 @@ pub const SCHEMA_REQUIRED: &[(&str, &[&str], &[&str])] = &[
     ("breadcrumb_list", &["BreadcrumbList"], &["itemListElement"]),
     ("faq_page", &["FAQPage"], &["mainEntity"]),
     ("local_business", &["LocalBusiness"], &["name", "address"]),
+    // Google 검색 센터 리치 결과 문서의 "Required properties" (최상위 속성만)
+    ("book", &["Book"], &["name", "author", "url", "workExample"]),
+    ("course", &["Course"], &["name", "description"]),
+    ("dataset", &["Dataset"], &["name", "description"]),
+    (
+        "discussion_forum",
+        &["DiscussionForumPosting", "SocialMediaPosting"],
+        &["author", "datePublished", "text|image|video"],
+    ),
+    ("education_qa", &["Quiz"], &["hasPart"]),
+    (
+        "employer_rating",
+        &["EmployerAggregateRating"],
+        &["itemReviewed", "ratingValue", "ratingCount|reviewCount"],
+    ),
+    (
+        "event",
+        &[
+            "Event",
+            "MusicEvent",
+            "SportsEvent",
+            "TheaterEvent",
+            "BusinessEvent",
+            "EducationEvent",
+            "Festival",
+        ],
+        &["name", "startDate", "location"],
+    ),
+    (
+        "claim_review",
+        &["ClaimReview"],
+        &["claimReviewed", "reviewRating", "url"],
+    ),
+    (
+        "image_license",
+        &["ImageObject"],
+        &[
+            "contentUrl",
+            "license|acquireLicensePage|creditText|creator|copyrightNotice",
+        ],
+    ),
+    (
+        "job_posting",
+        &["JobPosting"],
+        &[
+            "title",
+            "description",
+            "datePosted",
+            "hiringOrganization",
+            "jobLocation|applicantLocationRequirements",
+        ],
+    ),
+    (
+        "loyalty_program",
+        &["MemberProgram"],
+        &["name", "description", "hasTiers"],
+    ),
+    (
+        "math_solver",
+        &["MathSolver"],
+        &["url", "usageInfo", "potentialAction"],
+    ),
+    ("movie", &["Movie"], &["name", "image"]),
+    ("product_group", &["ProductGroup"], &["name"]),
+    ("profile_page", &["ProfilePage"], &["mainEntity"]),
+    ("qa_page", &["QAPage"], &["mainEntity"]),
+    ("recipe", &["Recipe"], &["name", "image"]),
+    (
+        "software_app",
+        &[
+            "SoftwareApplication",
+            "MobileApplication",
+            "WebApplication",
+            "VideoGame",
+        ],
+        &["name", "offers", "aggregateRating|review"],
+    ),
+    (
+        "vacation_rental",
+        &["VacationRental"],
+        &[
+            "name",
+            "identifier",
+            "image",
+            "latitude",
+            "longitude",
+            "containsPlace",
+        ],
+    ),
+    (
+        "video",
+        &["VideoObject"],
+        &["name", "thumbnailUrl", "uploadDate"],
+    ),
+    ("item_list", &["ItemList"], &["itemListElement"]),
+    (
+        "merchant_return_policy",
+        &["MerchantReturnPolicy"],
+        &["applicableCountry", "returnPolicyCategory"],
+    ),
 ];
 
 /// JSON-LD 안의 `@type` 이 있는 객체 하나.

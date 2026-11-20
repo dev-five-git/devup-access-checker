@@ -258,6 +258,28 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `structured_data.required.breadcrumb_list` | BreadcrumbList 스키마 필수 속성 |
 | `structured_data.required.faq_page` | FAQPage 스키마 필수 속성 |
 | `structured_data.required.local_business` | LocalBusiness 스키마 필수 속성 |
+| `structured_data.required.book` | Book 스키마 필수 속성 |
+| `structured_data.required.course` | Course 스키마 필수 속성 |
+| `structured_data.required.dataset` | Dataset 스키마 필수 속성 |
+| `structured_data.required.discussion_forum` | DiscussionForumPosting 스키마 필수 속성 |
+| `structured_data.required.education_qa` | Quiz 스키마 필수 속성 |
+| `structured_data.required.employer_rating` | EmployerAggregateRating 스키마 필수 속성 |
+| `structured_data.required.event` | Event 스키마 필수 속성 |
+| `structured_data.required.claim_review` | ClaimReview 스키마 필수 속성 |
+| `structured_data.required.image_license` | ImageObject 스키마 필수 속성 |
+| `structured_data.required.job_posting` | JobPosting 스키마 필수 속성 |
+| `structured_data.required.loyalty_program` | MemberProgram 스키마 필수 속성 |
+| `structured_data.required.math_solver` | MathSolver 스키마 필수 속성 |
+| `structured_data.required.movie` | Movie 스키마 필수 속성 |
+| `structured_data.required.product_group` | ProductGroup 스키마 필수 속성 |
+| `structured_data.required.profile_page` | ProfilePage 스키마 필수 속성 |
+| `structured_data.required.qa_page` | QAPage 스키마 필수 속성 |
+| `structured_data.required.recipe` | Recipe 스키마 필수 속성 |
+| `structured_data.required.software_app` | SoftwareApplication 스키마 필수 속성 |
+| `structured_data.required.vacation_rental` | VacationRental 스키마 필수 속성 |
+| `structured_data.required.video` | VideoObject 스키마 필수 속성 |
+| `structured_data.required.item_list` | ItemList 스키마 필수 속성 |
+| `structured_data.required.merchant_return_policy` | MerchantReturnPolicy 스키마 필수 속성 |
 | `content.heading_skip` | 헤딩 레벨 건너뜀 |
 | `content.internal_nofollow` | 내부 링크 nofollow |
 | `content.broken_internal_links` | 내부 링크 표본 중 비정상 응답 |
@@ -298,7 +320,7 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `accessibility.table_headers_missing` | 제목 셀(th) 없는 표 |
 | `accessibility.autoplay_media` | 자동 재생 미디어 |
 | `accessibility.positive_tabindex` | 양수 tabindex |
-| `accessibility.obsolete_elements` | 폐기된 표현 요소 (marquee·blink·font·center) |
+| `accessibility.obsolete_elements` | 폐기된 HTML 요소 (marquee·font·center 등, WHATWG 폐기 목록) |
 | `accessibility.new_window_links` | 새 창 링크 (target=_blank) |
 | `accessibility.zoom_disabled` | 확대 금지 viewport |
 | `accessibility.vague_link_text` | 목적을 알 수 없는 링크 텍스트 |
@@ -390,6 +412,9 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `security.insecure_form_action` | https 페이지에서 http 로 보내는 폼 |
 | `security.target_blank_noopener` | rel=noopener 없는 새 창 링크 |
 | `security.trusted_types` | Trusted Types (CSP require-trusted-types-for) |
+| `security.x_dns_prefetch_control` | X-DNS-Prefetch-Control |
+| `security.x_permitted_cross_domain_policies` | X-Permitted-Cross-Domain-Policies |
+| `security.info_disclosure_headers` | 버전·내부 정보를 노출하는 헤더 (OWASP 제거 권장) |
 | `performance.static_asset_cache` | 정적 리소스 Cache-Control |
 | `performance.dom_size` | DOM 크기 |
 | `performance.third_party_scripts` | 서드파티 스크립트 호스트 |
@@ -442,3 +467,4 @@ KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례
 | `transport.meta_refresh_redirect` | meta refresh 리다이렉트 (5초 이하, 따라감) |
 | `transport.js_redirect` | JavaScript 리다이렉트 (빈 페이지의 location 이동, 따라감) |
 | `transport.client_redirect_total` | 클라이언트 측 리다이렉트 수 |
+| `transport.security_txt_fields` | security.txt 필수 필드 (Contact·Expires) |

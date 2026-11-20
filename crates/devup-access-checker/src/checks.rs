@@ -1465,6 +1465,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     deep_checks(&mut o, i);
     rule_checks(&mut o, i);
     agent_checks(&mut o, i);
+    owasp_checks(&mut o, i);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -2309,7 +2310,7 @@ fn extended_checks(o: &mut Out, i: &Inputs, robots: &Result<Robots, String>) {
     o.push(
         "accessibility.obsolete_elements",
         Accessibility,
-        "폐기된 표현 요소 (marquee·blink·font·center)",
+        "폐기된 HTML 요소 (marquee·font·center 등)",
         Presence::from_bool(a.obsolete_elements > 0),
         Some(json!(a.obsolete_elements)),
         None,
@@ -3937,6 +3938,161 @@ fn agent_checks(o: &mut Out, i: &Inputs) {
     );
 }
 
+/// OWASP Secure Headers "headers_remove" 목록 (Server·X-Powered-By 는 별도 항목). 버전·내부 구조를 노출한다.
+pub const INFO_DISCLOSURE_HEADERS: &[&str] = &[
+    "$wsep",
+    "host-header",
+    "k-proxy-request",
+    "liferay-portal",
+    "oraclecommercecloud-version",
+    "pega-host",
+    "powered-by",
+    "product",
+    "sourcemap",
+    "teamcity-node-id",
+    "x-aspnet-version",
+    "x-aspnetmvc-version",
+    "x-atmosphere-error",
+    "x-atmosphere-first-request",
+    "x-atmosphere-tracking-id",
+    "x-b3-parentspanid",
+    "x-b3-sampled",
+    "x-b3-spanid",
+    "x-b3-traceid",
+    "x-beserver",
+    "x-backside-transport",
+    "x-cf-powered-by",
+    "x-cms",
+    "x-calculatedbetarget",
+    "x-cocoon-version",
+    "x-content-encoded-by",
+    "x-datadog-origin",
+    "x-datadog-parent-id",
+    "x-datadog-sampling-priority",
+    "x-datadog-tags",
+    "x-datadog-trace-id",
+    "x-diaginfo",
+    "x-envoy-attempt-count",
+    "x-envoy-external-address",
+    "x-envoy-internal",
+    "x-envoy-original-dst-host",
+    "x-envoy-upstream-service-time",
+    "x-feserver",
+    "x-framework",
+    "x-generated-by",
+    "x-generator",
+    "x-gitlab-meta",
+    "x-jitsi-release",
+    "x-joomla-version",
+    "x-kong-admin-latency",
+    "x-kong-client-latency",
+    "x-kong-proxy-latency",
+    "x-kong-request-id",
+    "x-kong-response-latency",
+    "x-kong-third-party-latency",
+    "x-kong-total-latency",
+    "x-kong-upstream-latency",
+    "x-kong-upstream-status",
+    "x-kubernetes-pf-flowschema-ui",
+    "x-kubernetes-pf-prioritylevel-uid",
+    "x-litespeed-cache",
+    "x-litespeed-purge",
+    "x-litespeed-tag",
+    "x-litespeed-vary",
+    "x-litespeed-cache-control",
+    "x-mod-pagespeed",
+    "x-nextjs-cache",
+    "x-nextjs-matched-path",
+    "x-nextjs-page",
+    "x-nextjs-redirect",
+    "x-owa-version",
+    "x-old-content-length",
+    "x-oneagent-js-injection",
+    "x-page-speed",
+    "x-php-version",
+    "x-powered-by-plesk",
+    "x-powered-cms",
+    "x-redirect-by",
+    "x-server-powered-by",
+    "x-sourcefiles",
+    "x-sourcemap",
+    "x-turbo-charged-by",
+    "x-tyk-trace-id",
+    "x-umbraco-version",
+    "x-varnish-backend",
+    "x-varnish-server",
+    "x-woodpecker-version",
+    "x-dtagentid",
+    "x-dthealthcheck",
+    "x-dtinjectedservlet",
+    "x-ruxit-js-agent",
+];
+
+/// OWASP 권장 헤더·노출 헤더, security.txt 필수 필드.
+fn owasp_checks(o: &mut Out, i: &Inputs) {
+    use Category::*;
+    for (id, name, label) in [
+        (
+            "security.x_dns_prefetch_control",
+            "x-dns-prefetch-control",
+            "X-DNS-Prefetch-Control",
+        ),
+        (
+            "security.x_permitted_cross_domain_policies",
+            "x-permitted-cross-domain-policies",
+            "X-Permitted-Cross-Domain-Policies",
+        ),
+    ] {
+        let v = header(&i.page.headers, name);
+        o.push(
+            id,
+            Security,
+            label,
+            Presence::from_bool(v.is_some()),
+            v.map(Value::from),
+            None,
+        );
+    }
+    let exposed: Vec<String> = INFO_DISCLOSURE_HEADERS
+        .iter()
+        .filter_map(|h| header(&i.page.headers, h).map(|v| format!("{h}: {v}")))
+        .collect();
+    o.push(
+        "security.info_disclosure_headers",
+        Security,
+        "버전·내부 정보를 노출하는 헤더 (OWASP 제거 권장)",
+        Presence::from_bool(!exposed.is_empty()),
+        (!exposed.is_empty()).then(|| json!(exposed)),
+        Some("OWASP Secure Headers 제거 권장 목록 기준 (Server·X-Powered-By 는 별도 항목)".into()),
+    );
+    // RFC 9116: Contact 와 Expires 는 필수
+    let wk = &i.well_known.security_txt;
+    let field = |name: &str| {
+        wk.body.as_deref().and_then(|b| {
+            b.lines().find_map(|l| {
+                let (k, v) = l.split_once(':')?;
+                k.trim()
+                    .eq_ignore_ascii_case(name)
+                    .then(|| v.trim().to_string())
+            })
+        })
+    };
+    let (contact, expires) = (field("contact"), field("expires"));
+    o.push(
+        "transport.security_txt_fields",
+        Transport,
+        "security.txt 필수 필드 (Contact·Expires)",
+        if wk.exists {
+            Presence::from_bool(contact.is_some() && expires.is_some())
+        } else {
+            Presence::NotApplicable
+        },
+        wk.exists
+            .then(|| json!({ "contact": contact, "expires": expires })),
+        Some("RFC 9116".into()),
+    );
+}
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -4857,5 +5013,95 @@ mod tests {
         fx.well_known.ard.exists = false;
         let c = fx.run();
         assert_eq!(get(&c, "geo.ard_manifest").presence, Presence::Missing);
+    }
+
+    #[test]
+    fn owasp_headers_security_txt_and_rich_results() {
+        let mut fx = Fx::failing();
+        fx.page
+            .headers
+            .insert("x-dns-prefetch-control", "off".parse().unwrap());
+        fx.page
+            .headers
+            .insert("x-aspnet-version", "4.0.30319".parse().unwrap());
+        fx.page
+            .headers
+            .insert("x-nextjs-cache", "HIT".parse().unwrap());
+        fx.well_known.security_txt = found(
+            "https://a.com/.well-known/security.txt",
+            "Contact: mailto:security@a.com\nExpires: 2030-01-01T00:00:00.000Z\n",
+        );
+        let html = r#"<html><head><script type="application/ld+json">[
+{"@type":"Event","name":"공연","startDate":"2027-01-01"},
+{"@type":"Recipe","name":"김치찌개","image":"k.jpg"},
+{"@type":"SoftwareApplication","name":"앱","offers":{"price":0},"review":{"@type":"Review"}}
+]</script></head><body><tt>고정폭</tt><strike>취소</strike></body></html>"#;
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "security.x_dns_prefetch_control").presence,
+            Presence::Present
+        );
+        assert_eq!(
+            get(&c, "security.x_permitted_cross_domain_policies").presence,
+            Presence::Missing
+        );
+        let leak = get(&c, "security.info_disclosure_headers");
+        assert_eq!(leak.presence, Presence::Present);
+        assert!(
+            leak.value
+                .as_ref()
+                .unwrap()
+                .to_string()
+                .contains("x-aspnet-version: 4.0.30319")
+        );
+        assert_eq!(
+            get(&c, "transport.security_txt_fields").presence,
+            Presence::Present
+        );
+        assert_eq!(
+            get(&c, "structured_data.required.event").presence,
+            Presence::Missing,
+            "location 없음"
+        );
+        assert_eq!(
+            get(&c, "structured_data.required.recipe").presence,
+            Presence::Present
+        );
+        assert_eq!(
+            get(&c, "structured_data.required.software_app").presence,
+            Presence::Present
+        );
+        assert_eq!(
+            get(&c, "structured_data.required.video").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "accessibility.obsolete_elements").value,
+            Some(json!(2))
+        );
+
+        // Expires 없는 security.txt, 노출 헤더 없음
+        fx.page.headers.clear();
+        fx.well_known.security_txt = found(
+            "https://a.com/.well-known/security.txt",
+            "Contact: mailto:a@a.com\n",
+        );
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "transport.security_txt_fields").presence,
+            Presence::Missing
+        );
+        assert_eq!(
+            get(&c, "security.info_disclosure_headers").presence,
+            Presence::Missing
+        );
+        // security.txt 자체가 없음
+        fx.well_known.security_txt = failed("s");
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "transport.security_txt_fields").presence,
+            Presence::NotApplicable
+        );
     }
 }
