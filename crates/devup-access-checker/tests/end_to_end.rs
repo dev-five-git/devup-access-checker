@@ -2,6 +2,13 @@ use devup_access_checker::{Checker, Options, Presence, Report};
 use wiremock::matchers::{header_regex, method, path};
 use wiremock::{Mock, MockServer, ResponseTemplate};
 
+/// 기본 옵션에서 일부만 바꾼다 (`Options` 는 `#[non_exhaustive]`).
+fn opts(f: impl FnOnce(&mut Options)) -> Options {
+    let mut o = Options::default();
+    f(&mut o);
+    o
+}
+
 const PAGE: &str = r#"<!doctype html><html lang="ko"><head>
 <meta charset="utf-8"><title>데브파이브 홈페이지 테스트</title>
 <meta name="description" content="설명">
@@ -68,10 +75,9 @@ fn presence(r: &Report, id: &str) -> Presence {
 #[tokio::test]
 async fn reports_presence_for_mock_site() {
     let s = site().await;
-    let r = Checker::new(Options {
-        check_transport: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_transport = false;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -232,11 +238,10 @@ async fn redirects_declared_sitemaps_and_site_files() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        sitemap_samples: 10,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.sitemap_samples = 10;
+    }))
     .check(&uri)
     .await
     .unwrap();
@@ -414,10 +419,9 @@ async fn extended_network_checks() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+    }))
     .check(&format!("{uri}/ko/"))
     .await
     .unwrap();
@@ -584,10 +588,9 @@ async fn files_headers_and_trust_checks() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -678,11 +681,10 @@ async fn multi_page_sample() {
         .respond_with(html(r#"<html lang="ko"><head><title>Extra</title><meta name="description" content="e"></head><body><p>no heading</p></body></html>"#))
         .mount(&s).await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+    }))
     .check(&uri)
     .await
     .unwrap();
@@ -791,12 +793,11 @@ async fn canonical_hreflang_css_and_weight() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        page_samples: 0,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.page_samples = 0;
+    }))
     .check(&format!("{uri}/ko/"))
     .await
     .unwrap();
@@ -863,12 +864,11 @@ async fn follows_meta_refresh() {
     Mock::given(method("GET")).and(path("/portal/main"))
         .respond_with(html(r#"<html lang="ko"><head><title>메인</title><meta name="description" content="d"></head><body><h1>메인</h1></body></html>"#))
         .mount(&s).await;
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        page_samples: 0,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.page_samples = 0;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -897,12 +897,11 @@ async fn blocked_page_makes_page_checks_unknown() {
         .respond_with(ResponseTemplate::new(200).set_body_string("User-agent: *\nAllow: /\n"))
         .mount(&s)
         .await;
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        page_samples: 0,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.page_samples = 0;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -962,12 +961,11 @@ async fn follows_js_redirect_and_sitemap_file_redirect() {
         .mount(&s)
         .await;
 
-    let r = Checker::new(Options {
-        check_ai_user_agents: false,
-        check_transport: false,
-        page_samples: 0,
-        ..Default::default()
-    })
+    let r = Checker::new(opts(|o| {
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.page_samples = 0;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -994,15 +992,14 @@ async fn id_set_is_fixed_regardless_of_options() {
         .check(&s.uri())
         .await
         .unwrap();
-    let off = Checker::new(Options {
-        check_links: false,
-        check_ai_user_agents: false,
-        check_transport: false,
-        check_resources: false,
-        page_samples: 0,
-        sitemap_samples: 0,
-        ..Default::default()
-    })
+    let off = Checker::new(opts(|o| {
+        o.check_links = false;
+        o.check_ai_user_agents = false;
+        o.check_transport = false;
+        o.check_resources = false;
+        o.page_samples = 0;
+        o.sitemap_samples = 0;
+    }))
     .check(&s.uri())
     .await
     .unwrap();
@@ -1029,4 +1026,515 @@ fn readme_lists_every_catalog_id() {
         .map(|(id, _, _)| *id)
         .collect();
     assert_eq!(listed, catalog);
+}
+
+/// robots.txt 가 기본 경로 sitemap 을 선언했는데 그 파일이 없으면 "선언 sitemap 접근" 은 missing.
+#[tokio::test]
+async fn declared_default_sitemap_missing_is_reported() {
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "text/html")
+                .set_body_string(PAGE),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ResponseTemplate::new(200).set_body_string(format!(
+            "User-agent: *\nDisallow: /*?sort=\n\nSitemap: {}/sitemap.xml\n",
+            s.uri()
+        )))
+        .mount(&s)
+        .await;
+    let r = Checker::new(opts(|o| {
+        o.check_transport = false;
+        o.check_ai_user_agents = false;
+    }))
+    .check(&format!("{}/?sort=1", s.uri()))
+    .await
+    .unwrap();
+    assert_eq!(
+        presence(&r, "crawling.robots_declared_sitemaps"),
+        Presence::Missing
+    );
+    // 쿼리까지 포함해 robots 규칙을 판정한다
+    assert_eq!(
+        presence(&r, "crawling.robots_allows.googlebot"),
+        Presence::Missing
+    );
+}
+
+/// 결과 항목명이 카탈로그와 같아야 한다 (분기마다 다른 항목명을 쓰지 않도록).
+#[tokio::test]
+async fn labels_match_catalog() {
+    let s = site().await;
+    for opts in [
+        Options::default(),
+        opts(|o| {
+            o.sitemap_samples = 0;
+            o.page_samples = 0;
+            o.check_links = false;
+        }),
+    ] {
+        let r = Checker::new(opts).check(&s.uri()).await.unwrap();
+        for (c, (id, cat, label)) in r.checks.iter().zip(devup_access_checker::CATALOG) {
+            assert_eq!(
+                (c.id.as_str(), c.category, c.label.as_str()),
+                (*id, *cat, *label)
+            );
+        }
+    }
+}
+
+fn html_page(body: &str) -> ResponseTemplate {
+    ResponseTemplate::new(200)
+        .insert_header("content-type", "text/html")
+        .set_body_string(body)
+}
+
+fn quick() -> Options {
+    opts(|o| {
+        o.check_transport = false;
+        o.check_ai_user_agents = false;
+        o.check_resources = false;
+    })
+}
+
+/// meta refresh 를 따라가지 않거나 중단하는 경우들.
+#[tokio::test]
+async fn client_redirect_edge_cases() {
+    let s = MockServer::start().await;
+    let long_text = "본문 ".repeat(150);
+    for (p, body) in [
+        // 지연이 길고 본문도 있어 리다이렉트로 보지 않음
+        ("/slow", format!(r#"<html><head><meta http-equiv="refresh" content="30; url=/x"></head><body>{long_text}</body></html>"#)),
+        // 해석할 수 없는 대상
+        ("/bad", r#"<html><head><meta http-equiv="refresh" content="0; url=http://["></head><body></body></html>"#.to_string()),
+        // 자기 자신
+        ("/self", r#"<html><head><meta http-equiv="refresh" content="0; url=/self"></head><body></body></html>"#.to_string()),
+        // 대상 요청 실패
+        ("/dead", r#"<html><head><meta http-equiv="refresh" content="0; url=http://127.0.0.1:9/"></head><body></body></html>"#.to_string()),
+    ] {
+        Mock::given(method("GET")).and(path(p)).respond_with(html_page(&body)).mount(&s).await;
+    }
+    for p in ["/slow", "/bad", "/self", "/dead"] {
+        let r = Checker::new(quick())
+            .check(&format!("{}{p}", s.uri()))
+            .await
+            .unwrap();
+        assert_eq!(
+            presence(&r, "transport.meta_refresh_redirect"),
+            Presence::Missing,
+            "{p}"
+        );
+    }
+}
+
+/// sitemap index: gzip 하위 sitemap 은 풀어서 표본을 얻고, 읽지 못하면 이유를 남긴다.
+#[tokio::test]
+async fn sitemap_index_children() {
+    use std::io::Write as _;
+    let s = MockServer::start().await;
+    let index = |child: &str| {
+        format!(
+            r#"<?xml version="1.0"?><sitemapindex><sitemap><loc>{child}</loc></sitemap></sitemapindex>"#
+        )
+    };
+    let child = format!(
+        r#"<?xml version="1.0"?><urlset><url><loc>{}/p</loc></url></urlset>"#,
+        s.uri()
+    );
+    let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+    gz.write_all(child.as_bytes()).unwrap();
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(html_page(PAGE))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/p"))
+        .respond_with(html_page(PAGE))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/c.xml.gz"))
+        .respond_with(ResponseTemplate::new(200).set_body_bytes(gz.finish().unwrap()))
+        .mount(&s)
+        .await;
+    let sitemap = Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(index(&format!("{}/c.xml.gz", s.uri()))),
+        )
+        .mount_as_scoped(&s)
+        .await;
+    let r = Checker::new(quick()).check(&s.uri()).await.unwrap();
+    assert_eq!(
+        presence(&r, "crawling.sitemap_broken_urls"),
+        Presence::Missing
+    );
+    drop(sitemap);
+
+    // 하위 sitemap 이 없음 → 이유가 노트에 남는다
+    let missing = Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(index(&format!("{}/none.xml", s.uri()))),
+        )
+        .mount_as_scoped(&s)
+        .await;
+    let r = Checker::new(quick()).check(&s.uri()).await.unwrap();
+    let c = r.get("crawling.sitemap_broken_urls").unwrap();
+    assert_eq!(c.presence, Presence::Unknown);
+    assert!(c.note.as_deref().unwrap().contains("읽기 실패"));
+    drop(missing);
+
+    // 하위 sitemap 이 하나도 없는 index
+    Mock::given(method("GET"))
+        .and(path("/sitemap.xml"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "application/xml")
+                .set_body_string(r#"<?xml version="1.0"?><sitemapindex></sitemapindex>"#),
+        )
+        .mount(&s)
+        .await;
+    let r = Checker::new(quick()).check(&s.uri()).await.unwrap();
+    assert_eq!(
+        presence(&r, "crawling.sitemap_broken_urls"),
+        Presence::Unknown
+    );
+}
+
+/// 해석할 수 없는 og:image 주소는 요청하지 않고 판별 불가.
+#[tokio::test]
+async fn invalid_og_image_url() {
+    let s = MockServer::start().await;
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(html_page(
+            r#"<html><head><meta property="og:image" content="http://["></head><body></body></html>"#,
+        ))
+        .mount(&s)
+        .await;
+    let r = Checker::new(opts(|o| {
+        o.check_transport = false;
+        o.check_ai_user_agents = false;
+    }))
+    .check(&s.uri())
+    .await
+    .unwrap();
+    assert_eq!(presence(&r, "open_graph.image_file"), Presence::Unknown);
+}
+
+/// docs/coverage.md 가 가리키는 항목 id 가 모두 카탈로그에 있어야 한다.
+#[test]
+fn coverage_doc_ids_exist() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/coverage.md");
+    let Ok(doc) = std::fs::read_to_string(path) else {
+        return; // 패키지로 배포된 소스에는 docs 가 없다
+    };
+    let catalog: std::collections::BTreeSet<&str> = devup_access_checker::CATALOG
+        .iter()
+        .map(|(id, _, _)| *id)
+        .collect();
+    let prefixes = [
+        "meta.",
+        "indexing.",
+        "open_graph.",
+        "twitter.",
+        "facebook.",
+        "structured_data.",
+        "content.",
+        "accessibility.",
+        "analytics.",
+        "performance.",
+        "transport.",
+        "crawling.",
+        "geo.",
+        "not_found_page.",
+        "links.",
+        "security.",
+        "trust.",
+        "site.",
+    ];
+    let mut missing = Vec::new();
+    for part in doc.split('`').skip(1).step_by(2) {
+        if prefixes.iter().any(|p| part.starts_with(p)) && !catalog.contains(part) {
+            missing.push(part.to_string());
+        }
+    }
+    assert!(missing.is_empty(), "카탈로그에 없는 id: {missing:?}");
+}
+
+#[tokio::test]
+async fn search_engine_network_items() {
+    let s = MockServer::start().await;
+    let port = s.address().port();
+    let page = r#"<!doctype html><html><head><title>t</title>
+<link rel="alternate" type="application/rss+xml" href="/feed.xml"></head><body><p>x</p></body></html>"#;
+    let ok = |ct: &str, body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", ct)
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(
+            ok("text/html", page)
+                .insert_header("etag", "\"v1\"")
+                .insert_header("last-modified", "Wed, 21 Oct 2026 07:28:00 GMT"),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/start"))
+        .respond_with(
+            ResponseTemplate::new(301)
+                .insert_header("location", format!("http://127.0.0.1:{port}/")),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ok("text/plain", "User-agent: *\nDisallow: /start\n"))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/feed.xml"))
+        .respond_with(ok(
+            "application/rss+xml",
+            "<?xml version=\"1.0\"?><rss version=\"2.0\"><channel><link>https://other.example/</link>\
+             <item><link>/rel</link><content:encoded>본문</content:encoded></item></channel></rss>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/BingSiteAuth.xml"))
+        .respond_with(ok(
+            "application/xml",
+            "<?xml version=\"1.0\"?><users><user>ABC</user></users>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/0123456789abcdef.txt"))
+        .respond_with(ok("text/plain", "0123456789abcdef\n"))
+        .mount(&s)
+        .await;
+
+    let r = Checker::new(opts(|o| {
+        o.indexnow_key = Some("0123456789abcdef".into());
+        o.page_samples = 0;
+        o.check_resources = false;
+    }))
+    .check(&format!("http://localhost:{port}/start"))
+    .await
+    .unwrap();
+    for id in [
+        "crawling.feed_valid",
+        "crawling.feed_items",
+        "crawling.feed_foreign_host",
+        "crawling.feed_full_content",
+        "meta.bing_site_auth_file",
+        "crawling.robots_encoding",
+        "crawling.indexnow_key_file",
+        "crawling.ua_access.yeti",
+        "crawling.ua_access.bingbot",
+        "transport.redirect_chain_robots_blocked",
+    ] {
+        assert_eq!(presence(&r, id), Presence::Present, "{id}");
+    }
+    assert_eq!(presence(&r, "crawling.feed_oversize"), Presence::Missing);
+    let ua = r
+        .get("crawling.ua_access.yeti")
+        .unwrap()
+        .value
+        .as_ref()
+        .unwrap();
+    assert_eq!(
+        (ua["title"].as_str(), ua["sameTitleAsPage"].as_bool()),
+        (Some("t"), Some(true))
+    );
+    assert_eq!(presence(&r, "not_found_page.redirects"), Presence::Missing);
+
+    // 형식이 틀린 키는 요청하지 않는다
+    let r = Checker::new(opts(|o| {
+        o.indexnow_key = Some("not a key".into());
+        o.check_transport = false;
+        o.check_links = false;
+        o.page_samples = 0;
+        o.check_resources = false;
+    }))
+    .check(&s.uri())
+    .await
+    .unwrap();
+    assert_eq!(
+        presence(&r, "crawling.indexnow_key_file"),
+        Presence::Missing
+    );
+    assert_eq!(presence(&r, "crawling.feed_valid"), Presence::NotApplicable);
+    assert_eq!(
+        presence(&r, "not_found_page.redirects"),
+        Presence::NotApplicable
+    );
+}
+
+#[tokio::test]
+async fn subpath_llms_agent_card_and_robots_chain() {
+    let s = MockServer::start().await;
+    let ok = |ct: &str, body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", ct)
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .and(path("/docs/page"))
+        .respond_with(ok(
+            "text/html",
+            "<html><head><title>d</title></head><body>x</body></html>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/docs/llms.txt"))
+        .respond_with(ok("text/plain", "# Docs\n"))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/.well-known/agent-card.json"))
+        .respond_with(ok("application/json", r#"{"name":"a"}"#))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/robots.txt"))
+        .respond_with(ok("text/plain", "User-agent: *\nAllow: /\n"))
+        .mount(&s)
+        .await;
+    let r = Checker::new(opts(|o| {
+        o.page_samples = 0;
+        o.check_resources = false;
+        o.check_ai_user_agents = false;
+    }))
+    .check(&format!("{}/docs/page", s.uri()))
+    .await
+    .unwrap();
+    assert_eq!(presence(&r, "geo.llms_txt_subpath"), Presence::Present);
+    assert_eq!(presence(&r, "geo.a2a_agent_card"), Presence::Missing);
+    assert_eq!(
+        presence(&r, "crawling.robots_redirect_hops"),
+        Presence::Missing
+    );
+    assert_eq!(
+        presence(&r, "crawling.robots_content_type"),
+        Presence::Present
+    );
+}
+
+#[tokio::test]
+async fn statement_mobile_icons_and_vulnerable_js() {
+    let s = MockServer::start().await;
+    let png = |w: u32| {
+        let mut v = vec![
+            0x89, b'P', b'N', b'G', 13, 10, 26, 10, 0, 0, 0, 13, b'I', b'H', b'D', b'R',
+        ];
+        v.extend(w.to_be_bytes());
+        v.extend(w.to_be_bytes());
+        v.extend([8, 6, 0, 0, 0, 0, 0, 0, 0]);
+        v
+    };
+    let page = r#"<html><head><title>t</title><link rel="apple-touch-icon" href="/apple.png"><link rel="manifest" href="/m.json">
+<link rel="alternate" media="only screen and (max-width: 640px)" href="/m"><script src="/js/jquery-1.12.4.min.js"></script></head>
+<body><a href="/accessibility">웹 접근성 정책</a></body></html>"#;
+    let ok = |ct: &str, body: &str| {
+        ResponseTemplate::new(200)
+            .insert_header("content-type", ct)
+            .set_body_string(body)
+    };
+    Mock::given(method("GET"))
+        .and(path("/"))
+        .respond_with(ok("text/html", page))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/accessibility"))
+        .respond_with(ok(
+            "text/html",
+            "<p>문의: <a href=\"mailto:a@a.com\">메일</a> WCAG 2.2 2026-01-01</p>",
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/m"))
+        .respond_with(ok(
+            "text/html",
+            &format!(
+                r#"<html><head><title>m</title><link rel="canonical" href="{}/"></head></html>"#,
+                s.uri()
+            ),
+        ))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/apple.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .set_body_bytes(png(180)),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/icon.png"))
+        .respond_with(
+            ResponseTemplate::new(200)
+                .insert_header("content-type", "image/png")
+                .set_body_bytes(png(180)),
+        )
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/m.json"))
+        .respond_with(ok("application/manifest+json", r#"{"name":"a","icons":[{"src":"/icon.png","sizes":"512x512"},{"src":"/x.png","sizes":"bad"},{"src":"/y.png","sizes":5},{"src":"/z.png","sizes":""}]}"#))
+        .mount(&s)
+        .await;
+    Mock::given(method("GET"))
+        .and(path("/js/jquery-1.12.4.min.js"))
+        .respond_with(ok("text/javascript", "/*! jQuery v1.12.4 */"))
+        .mount(&s)
+        .await;
+    let r = Checker::new(opts(|o| {
+        o.page_samples = 0;
+        o.check_ai_user_agents = false;
+    }))
+    .check(&s.uri())
+    .await
+    .unwrap();
+    for id in [
+        "accessibility.statement_link",
+        "accessibility.statement_feedback",
+        "meta.apple_touch_icon_spec",
+        "meta.manifest_icon_size_mismatch",
+        "security.vulnerable_js_libraries",
+    ] {
+        assert_eq!(presence(&r, id), Presence::Present, "{id}");
+    }
+    for id in [
+        "meta.mobile_alternate_mismatch",
+        "security.cors_reflects_origin_credentials",
+        "transport.hsts_over_http",
+    ] {
+        assert_eq!(presence(&r, id), Presence::Missing, "{id}");
+    }
+    assert_eq!(
+        presence(&r, "transport.http_redirect_off_host"),
+        Presence::NotApplicable
+    );
 }

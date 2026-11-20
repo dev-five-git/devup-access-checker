@@ -15,6 +15,7 @@ fn sel(s: &str) -> Selector {
 static META: LazyLock<Selector> = LazyLock::new(|| sel("meta"));
 static LINK: LazyLock<Selector> = LazyLock::new(|| sel("link[rel]"));
 static TITLE: LazyLock<Selector> = LazyLock::new(|| sel("title"));
+static BASE: LazyLock<Selector> = LazyLock::new(|| sel("base[href]"));
 static HTML: LazyLock<Selector> = LazyLock::new(|| sel("html"));
 static BODY: LazyLock<Selector> = LazyLock::new(|| sel("body"));
 static H1: LazyLock<Selector> = LazyLock::new(|| sel("h1"));
@@ -50,6 +51,8 @@ pub struct JsonLd {
 
 #[derive(Debug, Clone, Default)]
 pub struct PageFacts {
+    /// `<base href>` 로 정해진 문서 기준 URL (없으면 None). 상대 링크는 이것을 기준으로 해석한다.
+    pub document_base: Option<Url>,
     pub lang: Option<String>,
     pub title: Option<String>,
     pub charset: Option<String>,
@@ -88,11 +91,24 @@ pub struct PageFacts {
     pub extra: crate::extra::ExtraFacts,
     /// 웹 접근성 사실
     pub a11y: crate::a11y::A11yFacts,
+    pub more: crate::more::MoreFacts,
+    pub rules: crate::rules::RuleFacts,
+    pub spec: crate::spec::SpecFacts,
+    pub search: crate::search::SearchFacts,
+    pub sec: crate::sec::SecFacts,
+    pub google: crate::google::GoogleFacts,
+    pub aria: crate::aria::AriaFacts,
+    pub quality: crate::quality::QualityFacts,
     /// 신뢰·법적 정보
     pub trust: crate::trust::TrustFacts,
 }
 
 impl PageFacts {
+    /// 상대 링크 해석 기준: `<base href>` 가 있으면 그것, 없으면 페이지 URL.
+    pub fn link_base<'a>(&'a self, page: &'a Url) -> &'a Url {
+        self.document_base.as_ref().unwrap_or(page)
+    }
+
     /// `name` 우선, 없으면 `property` 에서 찾는다 (og:/twitter: 는 두 방식이 혼용된다).
     pub fn meta(&self, key: &str) -> Option<&str> {
         let key = key.to_ascii_lowercase();
@@ -183,9 +199,17 @@ fn push_unique(list: &mut Vec<String>, s: &str) {
 }
 
 /// HTML 문서에서 사실을 추출한다. `base` 는 내부/외부 링크 구분과 혼합 콘텐츠 판별에 쓴다.
-pub fn extract(html: &str, base: &Url) -> PageFacts {
+pub fn extract(html: &str, page_url: &Url) -> PageFacts {
     let doc = Html::parse_document(html);
+    // 첫 번째 <base href> 만 유효하다 (HTML 명세)
+    let document_base = doc
+        .select(&BASE)
+        .find_map(|b| b.value().attr("href"))
+        .and_then(|h| page_url.join(h.trim()).ok())
+        .filter(|u| matches!(u.scheme(), "http" | "https"));
+    let base = document_base.as_ref().unwrap_or(page_url);
     let mut f = PageFacts {
+        document_base: document_base.clone(),
         lang: doc
             .select(&HTML)
             .next()
@@ -317,7 +341,7 @@ pub fn extract(html: &str, base: &Url) -> PageFacts {
         let Ok(u) = base.join(href) else { continue };
         match u.scheme() {
             "http" | "https" => {
-                if u.host_str() == base.host_str() {
+                if u.host_str() == page_url.host_str() {
                     f.internal_links += 1;
                 } else {
                     f.external_links += 1;
@@ -327,7 +351,7 @@ pub fn extract(html: &str, base: &Url) -> PageFacts {
         }
     }
 
-    if base.scheme() == "https" {
+    if page_url.scheme() == "https" {
         for el in doc.select(&SUBRESOURCE) {
             let src = attr(&el, "src")
                 .or_else(|| attr(&el, "href"))
@@ -342,6 +366,14 @@ pub fn extract(html: &str, base: &Url) -> PageFacts {
     f.extra = crate::extra::extract(&doc, base);
     f.a11y = crate::a11y::extract(&doc);
     f.trust = crate::trust::extract(&doc, base);
+    f.more = crate::more::extract(&doc, base);
+    f.rules = crate::rules::extract(&doc, html, page_url);
+    f.spec = crate::spec::extract(&doc);
+    f.search = crate::search::extract(&doc, base);
+    f.sec = crate::sec::extract(&doc, base);
+    f.google = crate::google::extract(&doc, html, base);
+    f.aria = crate::aria::extract(&doc, base);
+    f.quality = crate::quality::extract(&doc, base);
     f
 }
 
@@ -437,5 +469,106 @@ mod tests {
         let html = r#"<html><body><img src="http://a.com/x.png"></body></html>"#;
         let f = extract(html, &Url::parse("http://example.com/").unwrap());
         assert!(f.insecure_subresources.is_empty());
+    }
+
+    #[test]
+    fn base_href_sets_link_base() {
+        let page = Url::parse("https://a.com/ko/about").unwrap();
+        let f = extract(
+            r#"<html><head><base href="/"><link rel="icon" href="favicon.ico"></head><body><a href="x">x</a></body></html>"#,
+            &page,
+        );
+        assert_eq!(f.link_base(&page).as_str(), "https://a.com/");
+        assert_eq!(
+            f.link_base(&page)
+                .join(f.favicon.as_deref().unwrap())
+                .unwrap()
+                .as_str(),
+            "https://a.com/favicon.ico"
+        );
+        let f = extract("<html><head></head></html>", &page);
+        assert_eq!(f.link_base(&page), &page);
+    }
+
+    /// 자주 나오지 않는 마크업 형태들을 한 문서에 모아 추출 결과를 확인한다.
+    #[test]
+    fn extracts_less_common_markup() {
+        let long_alt = "가".repeat(130);
+        let html = format!(
+            r#"<html><head>
+<meta http-equiv="Content-Type" content="text/html; charset=EUC-KR">
+<link rel="icon" href="">
+<link rel="apple-touch-icon" href="/apple.png">
+<link rel="preload" as="script" href="/x.js">
+<script type="text/javascript">var x = 1;</script>
+<script type="application/ld+json">{{"@type":"Article","sameAs":"https://x.com/a","name":null,"wordCount":5,
+  "datePublished":["2024-01-01"],"dateModified":5,"x":{{"dateModified":"2024-02-02"}}}}</script>
+<style>a:focus-visible {{ outline: 2px solid; }}</style>
+</head><body>
+<input type="button" value="보내기"><input type="button">
+<img src="/a.tiff" alt="{long_alt}">
+<a name="anchor-only" href=" ">x</a>
+</body></html>"#
+        );
+        let f = extract(&html, &base());
+        assert_eq!(f.charset.as_deref(), Some("euc-kr"));
+        assert_eq!(f.favicon, None, "빈 href 는 무시");
+        assert_eq!(f.apple_touch_icon.as_deref(), Some("/apple.png"));
+        assert_eq!(f.font_preloads, 0);
+        assert_eq!(f.json_ld.same_as, vec!["https://x.com/a".to_string()]);
+        assert_eq!(f.a11y.buttons, 2);
+        assert_eq!(f.a11y.unnamed_buttons, 1);
+        assert_eq!(f.a11y.long_alts, 1);
+        assert!(
+            f.extra.image_formats.is_empty(),
+            "알 수 없는 확장자는 집계하지 않음"
+        );
+        let article = &f.extra.ld_objects[0];
+        assert!(
+            !article.keys.contains(&"name".to_string()),
+            "null 값은 빈 값"
+        );
+        assert!(article.keys.contains(&"wordCount".to_string()));
+        assert_eq!(f.extra.published.as_deref(), Some("2024-01-01"));
+        assert_eq!(f.extra.modified.as_deref(), Some("2024-02-02"));
+        assert!(f.extra.inline_css.has_focus_visible);
+    }
+
+    /// frameset 문서에는 body 가 없다.
+    #[test]
+    fn frameset_document_has_no_body_text() {
+        let f = extract(
+            r#"<html><head><title>t</title></head><frameset><frame src="a.html"></frameset></html>"#,
+            &base(),
+        );
+        assert_eq!(f.body_text_len, 0);
+    }
+
+    /// 특이한 마크업에서도 추출이 패닉하지 않아야 한다 (실제 사이트에서 template 로 패닉한 적이 있음).
+    #[test]
+    fn extract_never_panics_on_odd_markup() {
+        let cases = [
+            "",
+            "plain text",
+            "<template><p>a</p>텍스트<template>중첩</template></template>",
+            "<svg><title>t</title><a href='x'>링크</a><foreignObject><p>p</p></foreignObject></svg>",
+            "<math><mi>x</mi></math>",
+            "<html><frameset><frame src=a></frameset></html>",
+            "<table><tr><td><table><tr><th>중첩</th></tr></table></td></tr></table>",
+            "<div><span><a href=",
+            "<p>&#xFFFFFF; &#0; &unknown;</p>",
+            "<input type=radio name><label for>x</label><a href='javascript:'>j</a>",
+            "<div role aria-label aria-hidden lang xml:lang tabindex accesskey style onclick>x</div>",
+            "<base href='http://['><link rel=icon href='http://['><img src='http://[' alt>",
+            "<select><option>a<optgroup><option>b</select><dl><dd>x</dl>",
+            "<noscript><p>대체</p></noscript><script>document.write('<p>')</script>",
+        ];
+        let page = base();
+        for html in cases {
+            let f = extract(html, &page);
+            let _ = f.link_base(&page);
+        }
+        let deep = "<div>".repeat(5_000);
+        let _ = extract(&deep, &page);
     }
 }

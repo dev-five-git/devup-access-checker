@@ -27,6 +27,7 @@ impl Presence {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
+#[non_exhaustive]
 pub enum Category {
     /// 기본 메타
     Meta,
@@ -93,6 +94,7 @@ impl Category {
 
 /// 개별 점검 항목 결과.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Check {
     /// 안정적인 식별자 (예: `meta.title`). 버전이 바뀌어도 의미가 유지된다.
     pub id: String,
@@ -110,6 +112,7 @@ pub struct Check {
 
 /// 하나의 URL 에 대한 전체 점검 결과.
 #[derive(Debug, Clone, Serialize, Deserialize)]
+#[non_exhaustive]
 pub struct Report {
     /// 정규화된 요청 URL
     pub url: String,
@@ -133,5 +136,35 @@ impl Report {
         self.checks
             .iter()
             .filter(|c| c.presence == Presence::Missing)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn report_lookup_and_missing() {
+        let check = |id: &str, presence| Check {
+            id: id.into(),
+            category: Category::Meta,
+            label: id.into(),
+            presence,
+            value: None,
+            note: None,
+        };
+        let r = Report {
+            url: "u".into(),
+            final_url: "u".into(),
+            status_code: 200,
+            duration_ms: 1,
+            blocked: None,
+            checks: vec![check("a", Presence::Present), check("b", Presence::Missing)],
+        };
+        assert_eq!(r.get("a").map(|c| c.presence), Some(Presence::Present));
+        assert_eq!(
+            r.missing().map(|c| c.id.as_str()).collect::<Vec<_>>(),
+            ["b"]
+        );
     }
 }

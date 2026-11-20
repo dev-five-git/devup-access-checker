@@ -7,7 +7,6 @@ edition = "2024"
 rust-version = "1.88"
 license = "Apache-2.0"
 repository = "https://github.com/dev-five-git/devup-access-checker"
-homepage = "https://github.com/dev-five-git/devup-access-checker"
 documentation = "https://docs.rs/devup-access-checker"
 
 [workspace.dependencies]

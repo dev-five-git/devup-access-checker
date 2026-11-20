@@ -23,6 +23,10 @@ fn host_limit(url: &str) -> Arc<Semaphore> {
         .and_then(|u| u.host_str().map(str::to_string))
         .unwrap_or_default();
     let mut map = HOST_LIMITS.lock().unwrap_or_else(|e| e.into_inner());
+    // 아무도 쓰지 않는 항목은 정리한다 (장시간 실행되는 서비스에서 맵이 무한히 커지지 않도록)
+    if map.len() > 256 {
+        map.retain(|_, s| Arc::strong_count(s) > 1);
+    }
     map.entry(host)
         .or_insert_with(|| Arc::new(Semaphore::new(PER_HOST_CONCURRENCY)))
         .clone()
@@ -79,6 +83,11 @@ fn is_dns_error(e: &reqwest::Error) -> bool {
     false
 }
 
+/// `map_err` 에 함수로 넘기기 위한 [`describe`].
+pub(crate) fn describe_owned(e: reqwest::Error) -> String {
+    describe(&e)
+}
+
 pub(crate) async fn send_get(client: &Client, url: &str) -> Result<Response, reqwest::Error> {
     send(client, Method::GET, url).await
 }
@@ -89,6 +98,8 @@ pub(crate) async fn send_head(client: &Client, url: &str) -> Result<Response, re
 
 /// 부속 파일 본문은 이 크기까지만 보관한다.
 const MAX_PROBE_BODY: usize = 512 * 1024;
+/// 보관 상한을 넘은 본문은 크기만 이 값까지 센다.
+const COUNT_LIMIT: usize = 64 * 1024 * 1024;
 /// sitemap 은 표준 한도(50MB) 판별을 위해 더 크게 받는다.
 const MAX_SITEMAP_BODY: usize = 51 * 1024 * 1024;
 
@@ -107,6 +118,10 @@ pub struct Page {
     pub version: String,
     /// 최종 연결의 TLS 서버 인증서 (https 일 때)
     pub certificate: Option<CertInfo>,
+    /// 원문이 UTF-8 BOM(EF BB BF)으로 시작
+    pub bom: bool,
+    /// 원문에서 첫 `<meta … charset` 이 끝나는 바이트 위치
+    pub meta_charset_offset: Option<usize>,
 }
 
 /// 대상 페이지용 클라이언트: 인증서 확인을 위해 TLS 정보를 함께 받는다.
@@ -160,7 +175,7 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
     let certificate = res
         .extensions()
         .get::<reqwest::tls::TlsInfo>()
-        .and_then(|i| i.peer_certificate())
+        .and_then(reqwest::tls::TlsInfo::peer_certificate)
         .and_then(parse_certificate);
     let declared_len = res.content_length();
     let mut res = res;
@@ -183,7 +198,11 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
         buf.len()
     };
     let body = decode_body(&buf, &headers);
+    static CHARSET_META: LazyLock<regex::bytes::Regex> =
+        LazyLock::new(|| regex::bytes::Regex::new(r"(?i)<meta[^>]*?charset").unwrap());
     Ok(Page {
+        bom: buf.starts_with(&[0xEF, 0xBB, 0xBF]),
+        meta_charset_offset: CHARSET_META.find(&buf).map(|m| m.end()),
         status,
         final_url,
         headers,
@@ -199,9 +218,13 @@ pub async fn fetch_page(client: &Client, url: &Url) -> Result<Page, Error> {
 /// 대상 페이지 본문은 이 크기까지만 받는다 (비정상적으로 큰 응답으로 인한 메모리 폭증 방지).
 pub const MAX_PAGE_BYTES: usize = 15 * 1024 * 1024;
 
-/// Content-Type 의 charset 으로 디코딩한다 (없거나 모르면 UTF-8, BOM 우선).
-fn decode_body(bytes: &[u8], headers: &HeaderMap) -> String {
-    let label = headers
+/// HTML 인코딩 판별 순서를 따라 디코딩한다: BOM → Content-Type charset → 앞 1024 바이트의
+/// `<meta charset>` / `http-equiv` → UTF-8.
+pub(crate) fn decode_body(bytes: &[u8], headers: &HeaderMap) -> String {
+    if let Some((enc, _)) = encoding_rs::Encoding::for_bom(bytes) {
+        return enc.decode(bytes).0.into_owned();
+    }
+    let header_label = headers
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .and_then(|ct| {
@@ -210,11 +233,48 @@ fn decode_body(bytes: &[u8], headers: &HeaderMap) -> String {
                 .find(|(k, _)| k.trim().eq_ignore_ascii_case("charset"))
                 .map(|(_, v)| v.trim().trim_matches('"').to_string())
         });
-    let encoding = label
+    let encoding = header_label
         .and_then(|l| encoding_rs::Encoding::for_label(l.as_bytes()))
+        .or_else(|| sniff_meta_charset(&bytes[..bytes.len().min(1024)]))
         .unwrap_or(encoding_rs::UTF_8);
     encoding.decode(bytes).0.into_owned()
 }
+
+fn sniff_meta_charset(head: &[u8]) -> Option<&'static encoding_rs::Encoding> {
+    static RE: LazyLock<regex::bytes::Regex> = LazyLock::new(|| {
+        regex::bytes::Regex::new(r#"(?i)<meta[^>]*?charset\s*=\s*["']?\s*([a-z0-9_:.\-]+)"#)
+            .unwrap()
+    });
+    let label = RE.captures(head)?.get(1)?.as_bytes();
+    let enc = encoding_rs::Encoding::for_label(label)?;
+    // 명세상 meta 로 UTF-16 을 선언하면 UTF-8 로 본다
+    Some(
+        if enc == encoding_rs::UTF_16LE || enc == encoding_rs::UTF_16BE {
+            encoding_rs::UTF_8
+        } else {
+            enc
+        },
+    )
+}
+
+/// 본문을 `max` 바이트까지만 받아 디코딩한다. (본문, 잘림 여부)
+async fn read_text(mut res: Response, max: usize) -> Result<(String, bool), reqwest::Error> {
+    let headers = res.headers().clone();
+    let mut buf = Vec::new();
+    let mut truncated = false;
+    while let Some(chunk) = res.chunk().await? {
+        buf.extend_from_slice(&chunk);
+        if buf.len() >= max {
+            buf.truncate(max);
+            truncated = true;
+            break;
+        }
+    }
+    Ok((decode_body(&buf, &headers), truncated))
+}
+
+/// 표본·대상 확인용 페이지 본문 상한.
+const MAX_SAMPLE_BYTES: usize = 5 * 1024 * 1024;
 
 #[derive(Debug, Clone, Copy)]
 pub enum Expected {
@@ -239,19 +299,55 @@ pub struct FileProbe {
     /// status 2xx/3xx AND 리다이렉트 우회 없음 AND 형식 일치
     pub exists: bool,
     pub body: Option<String>,
-    /// 잘리기 전 본문 바이트 수
+    /// 본문 바이트 수 (보관 상한과 무관한 전체 크기, 최대 64MB 까지 셈)
     pub size: Option<usize>,
+    /// 본문이 상한을 넘어 앞부분만 보관함
+    pub truncated: bool,
+    /// 받은 바이트가 UTF-8 로 올바름 (상한에서 잘린 마지막 글자는 허용)
+    pub utf8: bool,
     pub error: Option<String>,
 }
 
+/// 본문이 HTML 문서인지. 앞쪽의 BOM·공백·주석·`<?xml ...?>` 선언을 건너뛴 뒤 첫 태그로 판단한다.
 pub fn looks_like_html(body: &str) -> bool {
-    let lower = body
-        .trim_start_matches('\u{feff}')
-        .trim_start()
+    let mut rest = body.trim_start_matches('\u{feff}').trim_start();
+    loop {
+        if let Some(r) = rest.strip_prefix("<!--") {
+            match r.find("-->") {
+                Some(end) => rest = r[end + 3..].trim_start(),
+                None => return false,
+            }
+        } else if rest.starts_with("<?") {
+            match rest.find("?>") {
+                Some(end) => rest = rest[end + 2..].trim_start(),
+                None => return false,
+            }
+        } else {
+            break;
+        }
+    }
+    let head = rest
+        .chars()
+        .take(16)
+        .collect::<String>()
         .to_ascii_lowercase();
-    lower.starts_with("<!doctype html")
-        || lower.starts_with("<html")
-        || lower.starts_with("<!doctype>")
+    [
+        "<!doctype html",
+        "<!doctype>",
+        "<html",
+        "<head",
+        "<body",
+        "<meta",
+        "<title",
+        "<link",
+        "<script",
+    ]
+    .iter()
+    .any(|p| {
+        head.strip_prefix(p).is_some_and(|after| {
+            after.is_empty() || after.starts_with([' ', '>', '\t', '\n', '\r', '/'])
+        })
+    })
 }
 
 fn looks_like_xml(body: &str) -> bool {
@@ -262,17 +358,6 @@ fn looks_like_xml(body: &str) -> bool {
     ["<?xml", "<urlset", "<sitemapindex", "<rss", "<feed"]
         .iter()
         .any(|p| lower.starts_with(p))
-}
-
-fn truncate(mut s: String, max: usize) -> String {
-    if s.len() > max {
-        let mut cut = max;
-        while !s.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        s.truncate(cut);
-    }
-    s
 }
 
 pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileProbe {
@@ -294,15 +379,44 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
         .get(reqwest::header::CONTENT_TYPE)
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
-    let body = match res.text().await {
-        Ok(b) => b,
-        Err(e) => {
-            probe.status_code = Some(status);
-            probe.error = Some(describe(&e));
-            return probe;
-        }
+    let max = if matches!(expected, Expected::Xml) {
+        MAX_SITEMAP_BODY
+    } else {
+        MAX_PROBE_BODY
     };
-    if let Some(vendor) = crate::signals::bot_challenge(&body) {
+    // 상한까지만 보관하고, 그 뒤는 크기만 센다 (COUNT_LIMIT 에서 멈춤).
+    let headers = res.headers().clone();
+    let declared_len = res.content_length();
+    let mut res = res;
+    let mut buf = Vec::new();
+    let mut read = 0usize;
+    while read < COUNT_LIMIT {
+        match res.chunk().await {
+            Ok(Some(chunk)) => {
+                read += chunk.len();
+                if buf.len() <= max {
+                    buf.extend_from_slice(&chunk);
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                probe.status_code = Some(status);
+                probe.error = Some(describe(&e));
+                return probe;
+            }
+        }
+    }
+    if buf.len() > max {
+        probe.truncated = true;
+        buf.truncate(max);
+    }
+    probe.utf8 = std::str::from_utf8(&buf).map_or_else(|e| e.error_len().is_none(), |_| true);
+    let body = decode_body(&buf, &headers);
+    // 텍스트 파일 본문에 차단 공급자 이름이 언급된 경우를 오인하지 않도록 HTML 응답만 본다
+    if let Some(vendor) = looks_like_html(&body)
+        .then(|| crate::signals::bot_challenge(&body))
+        .flatten()
+    {
         probe.status_code = Some(status);
         probe.final_url = Some(final_url.to_string());
         probe.error = Some(format!("봇 차단 응답({vendor})"));
@@ -315,7 +429,7 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
         .unwrap_or_default()
         .to_ascii_lowercase();
     let head: String = body.chars().take(2048).collect();
-    let is_html = looks_like_html(&head);
+    let is_html = looks_like_html(&body);
     let gz = url.path().ends_with(".gz") && (ct.contains("gzip") || ct.contains("octet-stream"));
     probe.format_valid = match expected {
         Expected::Xml => (gz || ct.contains("xml") || looks_like_xml(&head)) && !is_html,
@@ -329,13 +443,8 @@ pub async fn probe_file(client: &Client, url: &Url, expected: Expected) -> FileP
     probe.exists = (200..400).contains(&status) && !to_root && probe.format_valid;
     probe.status_code = Some(status);
     probe.final_url = Some(final_url.to_string());
-    probe.size = Some(body.len());
-    let max = if matches!(expected, Expected::Xml) {
-        MAX_SITEMAP_BODY
-    } else {
-        MAX_PROBE_BODY
-    };
-    probe.body = Some(truncate(body, max));
+    probe.size = Some(declared_len.map_or(read, |n| (n as usize).max(read)));
+    probe.body = Some(body);
     probe
 }
 
@@ -388,16 +497,9 @@ pub async fn probe_link(client: &Client, raw: &str, base: &Url) -> LinkProbe {
 pub async fn probe_status_body(client: &Client, url: &Url) -> Result<(u16, String), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
-    let mut body = res.text().await.map_err(|e| describe(&e))?;
-    if body.len() > 65_536 {
-        let mut cut = 65_536;
-        while !body.is_char_boundary(cut) {
-            cut -= 1;
-        }
-        body.truncate(cut);
-    }
+    let (body, _) = read_text(res, 65_536).await.map_err(describe_owned)?;
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         return Err(format!("봇 차단 응답({vendor})"));
     }
@@ -408,7 +510,7 @@ pub async fn probe_status_body(client: &Client, url: &Url) -> Result<(u16, Strin
 pub async fn probe_status(client: &Client, url: &Url) -> Result<(u16, Url), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     Ok((res.status().as_u16(), res.url().clone()))
 }
 
@@ -432,13 +534,13 @@ pub async fn redirect_chain(
         .timeout(timeout)
         .redirect(Policy::none())
         .build()
-        .map_err(|e| e.to_string())?;
+        .expect("http client");
     let mut hops = Vec::new();
     let mut current = url.clone();
     for _ in 0..=max {
         let res = send_get(&client, current.as_str())
             .await
-            .map_err(|e| describe(&e))?;
+            .map_err(describe_owned)?;
         let status = res.status().as_u16();
         hops.push(Hop {
             url: current.to_string(),
@@ -492,7 +594,7 @@ pub async fn fetch_bytes(
 ) -> Result<(u16, Option<String>, Vec<u8>, bool), String> {
     let mut res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let ct = res
         .headers()
@@ -500,7 +602,7 @@ pub async fn fetch_bytes(
         .and_then(|v| v.to_str().ok())
         .map(str::to_string);
     let mut buf = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
         buf.extend_from_slice(&chunk);
         if buf.len() >= max {
             buf.truncate(max);
@@ -508,6 +610,152 @@ pub async fn fetch_bytes(
         }
     }
     Ok((status, ct, buf, false))
+}
+
+/// 하위 리소스 표본: 상태·최종 URL·Content-Type·전체 크기·앞부분 본문.
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ResourceSample {
+    pub status: u16,
+    pub final_url: String,
+    pub content_type: Option<String>,
+    /// 받은 바이트 (상한 `max` 에서 멈춤)
+    pub bytes: usize,
+    /// 앞 `keep` 바이트
+    pub body: Vec<u8>,
+}
+
+/// 리소스를 받아 상태와 크기, 앞부분 본문을 돌려준다 (상태가 오류여도 Ok).
+pub async fn sample_resource(
+    client: &Client,
+    url: &Url,
+    max: usize,
+    keep: usize,
+) -> Result<ResourceSample, String> {
+    let mut res = send_get(client, url.as_str())
+        .await
+        .map_err(describe_owned)?;
+    let mut s = ResourceSample {
+        status: res.status().as_u16(),
+        final_url: res.url().to_string(),
+        content_type: res
+            .headers()
+            .get(reqwest::header::CONTENT_TYPE)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        ..Default::default()
+    };
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
+        s.bytes += chunk.len();
+        if s.body.len() < keep {
+            s.body
+                .extend_from_slice(&chunk[..chunk.len().min(keep - s.body.len())]);
+        }
+        if s.bytes >= max {
+            s.bytes = max;
+            break;
+        }
+    }
+    Ok(s)
+}
+
+/// 리다이렉트를 따라가지 않고 첫 응답의 (상태, Location, HSTS 헤더 유무) 를 본다.
+pub async fn first_hop(
+    ua: &str,
+    timeout: Duration,
+    url: &Url,
+) -> Result<(u16, Option<String>, bool), String> {
+    let client = Client::builder()
+        .user_agent(ua)
+        .timeout(timeout)
+        .redirect(Policy::none())
+        .build()
+        .expect("http client");
+    let res = send_get(&client, url.as_str())
+        .await
+        .map_err(describe_owned)?;
+    let h = res.headers();
+    Ok((
+        res.status().as_u16(),
+        h.get(reqwest::header::LOCATION)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        h.contains_key(reqwest::header::STRICT_TRANSPORT_SECURITY),
+    ))
+}
+
+/// 임의의 Origin 으로 요청해 (Access-Control-Allow-Origin, Allow-Credentials 가 true 인지) 를 본다.
+pub async fn cors_probe(
+    client: &Client,
+    url: &Url,
+    origin: &str,
+) -> Result<(Option<String>, bool), String> {
+    let res = client
+        .get(url.as_str())
+        .header(reqwest::header::ORIGIN, origin)
+        .send()
+        .await
+        .map_err(describe_owned)?;
+    let h = res.headers();
+    Ok((
+        h.get(reqwest::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        h.get(reqwest::header::ACCESS_CONTROL_ALLOW_CREDENTIALS)
+            .and_then(|v| v.to_str().ok())
+            .is_some_and(|v| v.trim().eq_ignore_ascii_case("true")),
+    ))
+}
+
+/// 압축을 풀지 않는 클라이언트로 요청해 (상태, Content-Encoding) 을 본다.
+pub async fn raw_encoding(
+    ua: &str,
+    timeout: Duration,
+    url: &Url,
+) -> Result<(u16, Option<String>), String> {
+    let client = Client::builder()
+        .user_agent(ua)
+        .timeout(timeout)
+        .gzip(false)
+        .brotli(false)
+        .build()
+        .expect("http client");
+    let res = client
+        .get(url.as_str())
+        .header(reqwest::header::ACCEPT_ENCODING, "gzip, br")
+        .send()
+        .await
+        .map_err(describe_owned)?;
+    Ok((
+        res.status().as_u16(),
+        res.headers()
+            .get(reqwest::header::CONTENT_ENCODING)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+    ))
+}
+
+/// 하위 sitemap 을 받아 URL 목록을 돌려준다. `.xml.gz` (gzip) 도 풀어서 읽는다.
+pub async fn fetch_sitemap_locs(client: &Client, url: &Url) -> Result<Vec<String>, String> {
+    use std::io::Read;
+    let (status, _, bytes, _) = fetch_bytes(client, url, MAX_SITEMAP_BODY).await?;
+    if !(200..300).contains(&status) {
+        return Err(format!("HTTP {status}"));
+    }
+    let xml = if bytes.starts_with(&[0x1f, 0x8b]) {
+        let mut out = Vec::new();
+        flate2::read::GzDecoder::new(bytes.as_slice())
+            .take(MAX_SITEMAP_BODY as u64)
+            .read_to_end(&mut out)
+            .map_err(|e| format!("gzip: {e}"))?;
+        out
+    } else {
+        bytes
+    };
+    let text = String::from_utf8_lossy(&xml);
+    if looks_like_html(&text) {
+        return Err("HTML 응답".into());
+    }
+    Ok(crate::sitemap::summarize(&text).locs)
 }
 
 /// sitemap 표본 페이지 요약.
@@ -533,7 +781,7 @@ pub struct SamplePage {
 pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let final_url = res.url().clone();
     let header_noindex = res
@@ -542,12 +790,14 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
         .iter()
         .filter_map(|v| v.to_str().ok())
         .any(|v| v.to_ascii_lowercase().contains("noindex"));
-    let body = res.text().await.map_err(|e| describe(&e))?;
+    let (body, _) = read_text(res, MAX_SAMPLE_BYTES)
+        .await
+        .map_err(describe_owned)?;
     if let Some(vendor) = crate::signals::bot_challenge(&body) {
         return Err(format!("봇 차단 응답({vendor})"));
     }
     let facts = crate::html::extract(&body, &final_url);
-    let facts_base = final_url.clone();
+    let facts_base = facts.link_base(&final_url).clone();
     let meta_noindex = [facts.meta("robots"), facts.meta("googlebot")]
         .into_iter()
         .flatten()
@@ -558,7 +808,7 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
         canonical: facts
             .canonical
             .as_deref()
-            .and_then(|c| final_url.join(c).ok())
+            .and_then(|c| facts_base.join(c).ok())
             .map(|u| u.to_string()),
         final_url,
         noindex: header_noindex || meta_noindex,
@@ -586,7 +836,7 @@ pub async fn probe_page(client: &Client, url: &Url) -> Result<SamplePage, String
 pub async fn probe_headers(client: &Client, url: &Url) -> Result<(u16, HeaderMap), String> {
     let res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     Ok((res.status().as_u16(), res.headers().clone()))
 }
 
@@ -594,7 +844,7 @@ pub async fn probe_headers(client: &Client, url: &Url) -> Result<(u16, HeaderMap
 pub async fn head_length(client: &Client, url: &Url) -> Result<(u16, Option<u64>), String> {
     let res = send_head(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let len = res
         .headers()
         .get(reqwest::header::CONTENT_LENGTH)
@@ -604,22 +854,414 @@ pub async fn head_length(client: &Client, url: &Url) -> Result<(u16, Option<u64>
 }
 
 /// AI 크롤러 UA 요청: (상태, 최종 URL, 챌린지 공급자). 본문은 200KB 까지만 본다.
-pub async fn probe_ua(
+/// ETag·Last-Modified 로 조건부 GET 을 보내 상태 코드를 받는다 (304 지원 확인).
+pub async fn conditional_status(
     client: &Client,
     url: &Url,
-) -> Result<(u16, Url, Option<&'static str>), String> {
+    etag: Option<&str>,
+    last_modified: Option<&str>,
+) -> Result<u16, String> {
+    let mut req = client.get(url.as_str());
+    if let Some(e) = etag {
+        req = req.header(reqwest::header::IF_NONE_MATCH, e);
+    }
+    if let Some(l) = last_modified {
+        req = req.header(reqwest::header::IF_MODIFIED_SINCE, l);
+    }
+    let res = req.send().await.map_err(describe_owned)?;
+    Ok(res.status().as_u16())
+}
+
+/// (상태 코드, 최종 URL, 봇 차단 공급자, `<title>`)
+pub type UaProbe = (u16, Url, Option<&'static str>, Option<String>);
+
+/// 지정한 User-Agent 로 페이지를 받아 상태·차단 여부·제목을 본다 (제목은 일반 요청과 비교해 클로킹 단서로 쓴다).
+pub async fn probe_ua(client: &Client, url: &Url) -> Result<UaProbe, String> {
     let mut res = send_get(client, url.as_str())
         .await
-        .map_err(|e| describe(&e))?;
+        .map_err(describe_owned)?;
     let status = res.status().as_u16();
     let final_url = res.url().clone();
     let mut buf = Vec::new();
-    while let Some(chunk) = res.chunk().await.map_err(|e| describe(&e))? {
+    while let Some(chunk) = res.chunk().await.map_err(describe_owned)? {
         buf.extend_from_slice(&chunk);
         if buf.len() >= 200_000 {
             break;
         }
     }
-    let challenge = crate::signals::bot_challenge(&String::from_utf8_lossy(&buf));
-    Ok((status, final_url, challenge))
+    let text = String::from_utf8_lossy(&buf);
+    let challenge = crate::signals::bot_challenge(&text);
+    let title = scraper::Html::parse_document(&text)
+        .select(&scraper::Selector::parse("title").expect("valid selector"))
+        .next()
+        .map(|t| {
+            t.text()
+                .collect::<String>()
+                .split_whitespace()
+                .collect::<Vec<_>>()
+                .join(" ")
+        });
+    Ok((status, final_url, challenge, title))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn decodes_by_meta_charset_when_header_has_none() {
+        let (bytes, _, _) =
+            encoding_rs::EUC_KR.encode("<html><head><meta charset=\"euc-kr\"><title>한글</title>");
+        let mut h = HeaderMap::new();
+        h.insert(reqwest::header::CONTENT_TYPE, "text/html".parse().unwrap());
+        assert!(decode_body(&bytes, &h).contains("한글"));
+        // http-equiv 형식
+        let (bytes, _, _) = encoding_rs::EUC_KR
+            .encode(r#"<meta http-equiv="Content-Type" content="text/html; charset=EUC-KR">한글"#);
+        assert!(decode_body(&bytes, &h).contains("한글"));
+        // 헤더 charset 이 meta 보다 우선
+        h.insert(
+            reqwest::header::CONTENT_TYPE,
+            "text/html; charset=utf-8".parse().unwrap(),
+        );
+        assert!(decode_body("<meta charset=euc-kr>한글".as_bytes(), &h).contains("한글"));
+    }
+
+    #[test]
+    fn html_detection_skips_prolog_and_comments() {
+        assert!(looks_like_html("<!-- generated -->\n<!DOCTYPE html><html>"));
+        assert!(looks_like_html(
+            "<?xml version=\"1.0\"?>\n<!DOCTYPE html PUBLIC>"
+        ));
+        assert!(looks_like_html("  <head><meta charset=utf-8>"));
+        assert!(looks_like_html("<meta name=x>"));
+        assert!(!looks_like_html("# Title\n\n> <head> 태그 설명"));
+        assert!(!looks_like_html("<?xml version=\"1.0\"?><urlset>"));
+        assert!(!looks_like_html("User-agent: *\nDisallow: /"));
+        assert!(!looks_like_html("<headline>"));
+        // 닫히지 않은 주석·선언
+        assert!(!looks_like_html("<!-- open"));
+        assert!(!looks_like_html("<?xml open"));
+    }
+
+    // ===== 네트워크 경계 상황 =====
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use wiremock::matchers::{method, path};
+    use wiremock::{Mock, MockServer, ResponseTemplate};
+
+    fn client() -> Client {
+        build_client("test", Duration::from_secs(5))
+    }
+
+    async fn serve(p: &str, r: ResponseTemplate) -> (MockServer, Url) {
+        let s = MockServer::start().await;
+        Mock::given(method("GET"))
+            .and(path(p))
+            .respond_with(r)
+            .mount(&s)
+            .await;
+        let url = Url::parse(&format!("{}{p}", s.uri())).unwrap();
+        (s, url)
+    }
+
+    /// Content-Length 보다 짧은 본문을 보내고 연결을 끊는 서버 (본문 읽기 오류 재현).
+    async fn cut_body_server() -> Url {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            loop {
+                let Ok((mut sock, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let _ = sock
+                    .write_all(b"HTTP/1.1 200 OK\r\ncontent-type: text/plain\r\ncontent-length: 1000\r\n\r\nshort")
+                    .await;
+            }
+        });
+        Url::parse(&format!("http://{addr}/robots.txt")).unwrap()
+    }
+
+    const CHALLENGE: &str =
+        "<!doctype html><html><head><title>Just a moment...</title></head></html>";
+
+    #[test]
+    fn idle_host_limits_are_evicted() {
+        for i in 0..300 {
+            host_limit(&format!("http://h{i}.example/"));
+        }
+        assert!(HOST_LIMITS.lock().unwrap().len() <= 257);
+    }
+
+    #[test]
+    fn decodes_bom_and_utf16_meta_as_utf8() {
+        let h = HeaderMap::new();
+        let mut bom = vec![0xEF, 0xBB, 0xBF];
+        bom.extend_from_slice("한글".as_bytes());
+        assert_eq!(decode_body(&bom, &h), "한글");
+        // meta 로 UTF-16 을 선언해도 바이트는 UTF-8 로 해석한다
+        assert!(decode_body("<meta charset=utf-16>한글".as_bytes(), &h).contains("한글"));
+    }
+
+    #[test]
+    fn parses_certificate_fixture() {
+        let der = include_bytes!("../tests/fixtures/cert.der");
+        let c = parse_certificate(der).unwrap();
+        assert!(c.subject.contains("test.local"));
+        assert!(c.not_after > 0);
+        assert!(parse_certificate(b"not a cert").is_none());
+    }
+
+    #[tokio::test]
+    async fn describes_errors() {
+        // timeout
+        let (_s, url) = serve(
+            "/slow",
+            ResponseTemplate::new(200).set_delay(Duration::from_secs(3)),
+        )
+        .await;
+        let quick = build_client("t", Duration::from_millis(200));
+        let e = send_get(&quick, url.as_str()).await.unwrap_err();
+        assert_eq!(describe(&e), "timeout");
+        // 리다이렉트 반복
+        let (s, url) = serve(
+            "/loop",
+            ResponseTemplate::new(302).insert_header("location", "/loop"),
+        )
+        .await;
+        let e = send_get(
+            &build_page_client("t", Duration::from_secs(5)),
+            url.as_str(),
+        )
+        .await
+        .unwrap_err();
+        assert_eq!(describe(&e), "too many redirects");
+        assert!(
+            redirect_chain("t", Duration::from_secs(5), &url, 3)
+                .await
+                .unwrap_err()
+                .contains("too many redirects")
+        );
+        drop(s);
+        // 그 외 (잘못된 URL)
+        let e = send_get(&client(), "not a url").await.unwrap_err();
+        assert!(!describe(&e).is_empty());
+    }
+
+    #[tokio::test]
+    async fn body_read_errors_and_truncation() {
+        let cut = cut_body_server().await;
+        assert!(fetch_page(&client(), &cut).await.is_err());
+        let p = probe_file(&client(), &cut, Expected::PlainText).await;
+        assert!(p.error.is_some());
+
+        // 대상 페이지 상한 초과
+        let big = "a".repeat(MAX_PAGE_BYTES + 10);
+        let (_s, url) = serve("/big", ResponseTemplate::new(200).set_body_string(big)).await;
+        let page = fetch_page(&client(), &url).await.unwrap();
+        assert!(page.truncated);
+        assert!(page.body_bytes >= MAX_PAGE_BYTES);
+
+        // 사이트 파일 상한 초과 → 실제 크기와 truncated
+        let text = "b".repeat(MAX_PROBE_BODY + 10);
+        let (_s, url) = serve(
+            "/llms.txt",
+            ResponseTemplate::new(200).set_body_string(text),
+        )
+        .await;
+        let p = probe_file(&client(), &url, Expected::PlainText).await;
+        assert!(p.truncated);
+        assert_eq!(p.size, Some(MAX_PROBE_BODY + 10));
+
+        // 404 본문 상한
+        let (_s, url) = serve(
+            "/404",
+            ResponseTemplate::new(404).set_body_string("c".repeat(70_000)),
+        )
+        .await;
+        let (status, body) = probe_status_body(&client(), &url).await.unwrap();
+        assert_eq!((status, body.len()), (404, 65_536));
+
+        // fetch_bytes / sample_resource 상한
+        let (_s, url) = serve(
+            "/bin",
+            ResponseTemplate::new(200).set_body_bytes(vec![1u8; 5000]),
+        )
+        .await;
+        let (_, _, bytes, truncated) = fetch_bytes(&client(), &url, 100).await.unwrap();
+        assert_eq!((bytes.len(), truncated), (100, true));
+        let r = sample_resource(&client(), &url, 100, 10).await.unwrap();
+        assert_eq!((r.status, r.bytes, r.body.len()), (200, 100, 10));
+        let r = sample_resource(&client(), &url, 1_000_000, 10_000)
+            .await
+            .unwrap();
+        assert_eq!((r.bytes, r.body.len()), (5000, 5000));
+        assert_eq!(
+            raw_encoding("t", Duration::from_secs(5), &url)
+                .await
+                .unwrap(),
+            (200, None)
+        );
+        let (_s3, moved) = serve(
+            "/moved",
+            ResponseTemplate::new(301)
+                .insert_header("location", "https://b.com/")
+                .insert_header("strict-transport-security", "max-age=1")
+                .insert_header("access-control-allow-origin", "https://o.invalid")
+                .insert_header("access-control-allow-credentials", "true"),
+        )
+        .await;
+        assert_eq!(
+            first_hop("t", Duration::from_secs(5), &moved)
+                .await
+                .unwrap(),
+            (301, Some("https://b.com/".into()), true)
+        );
+        let no_redirect = Client::builder().redirect(Policy::none()).build().unwrap();
+        assert_eq!(
+            cors_probe(&no_redirect, &moved, "https://o.invalid")
+                .await
+                .unwrap(),
+            (Some("https://o.invalid".into()), true)
+        );
+        assert!(
+            first_hop(
+                "t",
+                Duration::from_secs(5),
+                &Url::parse("http://127.0.0.1:9/").unwrap()
+            )
+            .await
+            .is_err()
+        );
+        assert!(
+            cors_probe(&client(), &Url::parse("http://127.0.0.1:9/").unwrap(), "x")
+                .await
+                .is_err()
+        );
+        let (_s2, gz) = serve(
+            "/gz",
+            ResponseTemplate::new(200).insert_header("content-encoding", "gzip"),
+        )
+        .await;
+        assert_eq!(
+            raw_encoding("t", Duration::from_secs(5), &gz)
+                .await
+                .unwrap(),
+            (200, Some("gzip".into()))
+        );
+        let closed = Url::parse("http://127.0.0.1:9/").unwrap();
+        assert!(
+            raw_encoding("t", Duration::from_secs(5), &closed)
+                .await
+                .is_err()
+        );
+        assert!(sample_resource(&client(), &closed, 10, 10).await.is_err());
+
+        // UA 요청은 앞 200KB 만 본다
+        let (_s, url) = serve(
+            "/",
+            ResponseTemplate::new(200).set_body_string("d".repeat(300_000)),
+        )
+        .await;
+        let (status, _, challenge, _) = probe_ua(&client(), &url).await.unwrap();
+        assert_eq!((status, challenge), (200, None));
+    }
+
+    #[tokio::test]
+    async fn challenge_pages_are_errors() {
+        let (_s, url) = serve(
+            "/robots.txt",
+            ResponseTemplate::new(200).set_body_string(CHALLENGE),
+        )
+        .await;
+        let p = probe_file(&client(), &url, Expected::PlainText).await;
+        assert!(p.error.unwrap().contains("Cloudflare"));
+        assert!(probe_status_body(&client(), &url).await.is_err());
+        assert!(probe_page(&client(), &url).await.is_err());
+    }
+
+    #[tokio::test]
+    async fn link_probe_rejects_bad_targets() {
+        let base = Url::parse("https://a.com/").unwrap();
+        assert_eq!(
+            probe_link(&client(), "http://[", &base)
+                .await
+                .error
+                .as_deref(),
+            Some("invalid url")
+        );
+        assert!(
+            probe_link(&client(), "mailto:x@a.com", &base)
+                .await
+                .error
+                .unwrap()
+                .contains("non-http")
+        );
+    }
+
+    #[tokio::test]
+    async fn sitemap_locs_from_plain_gzip_and_html() {
+        use std::io::Write as _;
+        let xml = r#"<?xml version="1.0"?><urlset><url><loc>https://a.com/p</loc></url></urlset>"#;
+        let mut gz = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+        gz.write_all(xml.as_bytes()).unwrap();
+        let (_s, url) = serve(
+            "/s.xml.gz",
+            ResponseTemplate::new(200).set_body_bytes(gz.finish().unwrap()),
+        )
+        .await;
+        assert_eq!(
+            fetch_sitemap_locs(&client(), &url).await.unwrap(),
+            ["https://a.com/p"]
+        );
+        let (_s, url) = serve("/s.xml", ResponseTemplate::new(200).set_body_string(xml)).await;
+        assert_eq!(fetch_sitemap_locs(&client(), &url).await.unwrap().len(), 1);
+        let (_s, url) = serve(
+            "/h.xml",
+            ResponseTemplate::new(200).set_body_string("<!doctype html><html>"),
+        )
+        .await;
+        assert!(fetch_sitemap_locs(&client(), &url).await.is_err());
+        let (_s, url) = serve("/n.xml", ResponseTemplate::new(404)).await;
+        assert_eq!(
+            fetch_sitemap_locs(&client(), &url).await.unwrap_err(),
+            "HTTP 404"
+        );
+        // gzip 헤더만 있고 내용이 깨짐
+        let (_s, url) = serve(
+            "/bad.xml.gz",
+            ResponseTemplate::new(200).set_body_bytes(vec![0x1f, 0x8b, 0, 1, 2]),
+        )
+        .await;
+        assert!(
+            fetch_sitemap_locs(&client(), &url)
+                .await
+                .unwrap_err()
+                .starts_with("gzip")
+        );
+    }
+
+    #[tokio::test]
+    async fn invalid_location_and_header_noindex() {
+        let (_s, url) = serve(
+            "/r",
+            ResponseTemplate::new(301).insert_header("location", "http://["),
+        )
+        .await;
+        assert!(
+            redirect_chain("t", Duration::from_secs(5), &url, 3)
+                .await
+                .unwrap_err()
+                .contains("invalid Location")
+        );
+        let (_s, url) = serve(
+            "/p",
+            ResponseTemplate::new(200)
+                .insert_header("x-robots-tag", "googlebot: NOINDEX")
+                .set_body_string("<html><body>x</body></html>"),
+        )
+        .await;
+        assert!(probe_page(&client(), &url).await.unwrap().noindex);
+    }
 }

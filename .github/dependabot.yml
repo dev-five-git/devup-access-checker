@@ -11,6 +11,9 @@ updates:
     open-pull-requests-limit: 5
     ignore:
       - dependency-name: "changepacks/action"
+    groups:
+      actions:
+        patterns: ["*"]
   - package-ecosystem: "cargo"
     directory: "/"
     schedule:
@@ -19,3 +22,7 @@ updates:
       time: "06:00"
       timezone: "Asia/Seoul"
     open-pull-requests-limit: 5
+    # 호환(minor·patch) 업데이트는 한 PR 로 묶고, 호환이 깨지는 메이저 업데이트는 따로 연다
+    groups:
+      cargo-compatible:
+        update-types: ["minor", "patch"]

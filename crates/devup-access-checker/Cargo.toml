@@ -6,7 +6,6 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-homepage.workspace = true
 documentation.workspace = true
 keywords = ["seo", "geo", "accessibility", "llms-txt", "audit"]
 categories = ["web-programming", "development-tools"]
@@ -15,8 +14,8 @@ readme = "../../README.md"
 [dependencies]
 reqwest = { version = "0.13", default-features = false, features = ["rustls", "http2", "charset", "gzip", "brotli"] }
 x509-parser = "0.18"
-imagesize = "0.14"
-scraper = "0.24"
+imagesize = "0.15"
+scraper = "0.29"
 regex = "1"
 url = "2"
 serde.workspace = true
@@ -25,6 +24,9 @@ thiserror = "2"
 tokio.workspace = true
 futures = "0.3"
 encoding_rs = "0.8"
+flate2 = "1.1.11"
+psl = "2.1.258"
+unicode-normalization = "0.1.26"
 
 [dev-dependencies]
 wiremock = "0.6"
