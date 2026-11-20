@@ -1,1 +1,0 @@
-{"changes":{"crates/devup-access-checker/Cargo.toml":"Patch","crates/devup-access-checker-cli/Cargo.toml":"Patch"},"note":"의존성 최신화: psl 2.1.259(공개 접미사 목록 갱신), clap 4.6.9","date":"2026-11-20T00:00:00.0000000Z"}
