@@ -1233,3 +1233,43 @@ async fn invalid_og_image_url() {
     .unwrap();
     assert_eq!(presence(&r, "open_graph.image_file"), Presence::Unknown);
 }
+
+/// docs/coverage.md 가 가리키는 항목 id 가 모두 카탈로그에 있어야 한다.
+#[test]
+fn coverage_doc_ids_exist() {
+    let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../docs/coverage.md");
+    let Ok(doc) = std::fs::read_to_string(path) else {
+        return; // 패키지로 배포된 소스에는 docs 가 없다
+    };
+    let catalog: std::collections::BTreeSet<&str> = devup_access_checker::CATALOG
+        .iter()
+        .map(|(id, _, _)| *id)
+        .collect();
+    let prefixes = [
+        "meta.",
+        "indexing.",
+        "open_graph.",
+        "twitter.",
+        "facebook.",
+        "structured_data.",
+        "content.",
+        "accessibility.",
+        "analytics.",
+        "performance.",
+        "transport.",
+        "crawling.",
+        "geo.",
+        "not_found_page.",
+        "links.",
+        "security.",
+        "trust.",
+        "site.",
+    ];
+    let mut missing = Vec::new();
+    for part in doc.split('`').skip(1).step_by(2) {
+        if prefixes.iter().any(|p| part.starts_with(p)) && !catalog.contains(part) {
+            missing.push(part.to_string());
+        }
+    }
+    assert!(missing.is_empty(), "카탈로그에 없는 id: {missing:?}");
+}

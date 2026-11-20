@@ -92,6 +92,7 @@ pub struct PageFacts {
     /// 웹 접근성 사실
     pub a11y: crate::a11y::A11yFacts,
     pub more: crate::more::MoreFacts,
+    pub rules: crate::rules::RuleFacts,
     /// 신뢰·법적 정보
     pub trust: crate::trust::TrustFacts,
 }
@@ -360,6 +361,7 @@ pub fn extract(html: &str, page_url: &Url) -> PageFacts {
     f.a11y = crate::a11y::extract(&doc);
     f.trust = crate::trust::extract(&doc, base);
     f.more = crate::more::extract(&doc, base);
+    f.rules = crate::rules::extract(&doc, html, page_url);
     f
 }
 
@@ -528,5 +530,33 @@ mod tests {
             &base(),
         );
         assert_eq!(f.body_text_len, 0);
+    }
+
+    /// 특이한 마크업에서도 추출이 패닉하지 않아야 한다 (실제 사이트에서 template 로 패닉한 적이 있음).
+    #[test]
+    fn extract_never_panics_on_odd_markup() {
+        let cases = [
+            "",
+            "plain text",
+            "<template><p>a</p>텍스트<template>중첩</template></template>",
+            "<svg><title>t</title><a href='x'>링크</a><foreignObject><p>p</p></foreignObject></svg>",
+            "<math><mi>x</mi></math>",
+            "<html><frameset><frame src=a></frameset></html>",
+            "<table><tr><td><table><tr><th>중첩</th></tr></table></td></tr></table>",
+            "<div><span><a href=",
+            "<p>&#xFFFFFF; &#0; &unknown;</p>",
+            "<input type=radio name><label for>x</label><a href='javascript:'>j</a>",
+            "<div role aria-label aria-hidden lang xml:lang tabindex accesskey style onclick>x</div>",
+            "<base href='http://['><link rel=icon href='http://['><img src='http://[' alt>",
+            "<select><option>a<optgroup><option>b</select><dl><dd>x</dl>",
+            "<noscript><p>대체</p></noscript><script>document.write('<p>')</script>",
+        ];
+        let page = base();
+        for html in cases {
+            let f = extract(html, &page);
+            let _ = f.link_base(&page);
+        }
+        let deep = "<div>".repeat(5_000);
+        let _ = extract(&deep, &page);
     }
 }

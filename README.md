@@ -90,6 +90,10 @@ Rust 1.88 이상 (CI에서 확인).
 
 [changepacks](https://github.com/changepacks/changepacks)로 배포합니다. 변경 사항과 함께 `.changepacks/` 에 changepack 로그를 추가해 main 에 머지하면 CI가 버전을 올리고 crates.io 에 배포한 뒤, CLI 바이너리를 GitHub Release 에 올립니다. 저장소 시크릿 `CARGO_REGISTRY_TOKEN`이 필요합니다.
 
+## 점검 기준 대조표
+
+KWCAG 2.2 의 33개 검사항목, axe-core 규칙, Lighthouse(SEO·모범 사례·성능), Google 검색 센터, OWASP 보안 헤더를 하나씩 대조했습니다. 기준마다 어떤 항목으로 확인하는지, 정적 HTML 로는 왜 확인할 수 없는지(렌더링·스크립트 실행·의미 판단 필요)는 [docs/coverage.md](docs/coverage.md)에 있습니다.
+
 ## 점검 항목
 
 옵션과 상황에 따라 일부 항목이 빠질 수 있습니다.
@@ -129,6 +133,7 @@ Rust 1.88 이상 (CI에서 확인).
 | `indexing.x_robots_tag` | X-Robots-Tag 헤더 |
 | `indexing.header_noindex` | X-Robots-Tag noindex |
 | `indexing.meta_refresh` | meta refresh 리다이렉트 |
+| `indexing.snippet_controls` | 스니펫 제한 지시어 (nosnippet·max-snippet 등) |
 | `open_graph.title` | og:title |
 | `open_graph.description` | og:description |
 | `open_graph.image` | og:image |
@@ -256,6 +261,8 @@ Rust 1.88 이상 (CI에서 확인).
 | `content.heading_skip` | 헤딩 레벨 건너뜀 |
 | `content.internal_nofollow` | 내부 링크 nofollow |
 | `content.broken_internal_links` | 내부 링크 표본 중 비정상 응답 |
+| `content.uncrawlable_links` | 검색엔진이 따라갈 수 없는 링크 (href 없음·javascript:) |
+| `content.plugins` | 플러그인 콘텐츠 (Flash·Java 등) |
 | `performance.render_blocking_scripts` | head 렌더링 차단 스크립트 (async/defer 없음) |
 | `performance.head_stylesheets` | head 외부 스타일시트 |
 | `performance.preconnect` | preconnect / dns-prefetch |
@@ -331,6 +338,29 @@ Rust 1.88 이상 (CI에서 확인).
 | `accessibility.redundant_alt` | 중복 표현이 든 alt ("이미지", "image of" 등) |
 | `accessibility.empty_summary` | 비어 있는 details summary |
 | `accessibility.page_title_generic` | 기본값 그대로인 페이지 제목 ("React App" 등) |
+| `accessibility.markup_errors` | HTML 마크업 오류 (파서 오류) |
+| `accessibility.aria_invalid_value` | 허용되지 않는 ARIA 속성 값 |
+| `accessibility.aria_name_prohibited` | 이름을 붙일 수 없는 요소의 aria-label |
+| `accessibility.aria_required_children` | 필수 자식 역할이 없는 ARIA 컨테이너 |
+| `accessibility.aria_required_parent` | 필수 부모 역할이 없는 ARIA 요소 |
+| `accessibility.aria_deprecated_role` | 폐기된 ARIA 역할 |
+| `accessibility.status_widget_unnamed` | 이름 없는 progress·meter·tooltip |
+| `accessibility.label_title_only` | title 속성만으로 이름이 붙은 입력 요소 |
+| `accessibility.multiple_labels` | label 이 둘 이상 연결된 입력 요소 |
+| `accessibility.label_name_mismatch` | 보이는 텍스트를 포함하지 않는 aria-label |
+| `accessibility.landmark_not_top_level` | 다른 랜드마크 안에 든 main·banner·contentinfo |
+| `accessibility.duplicate_banner` | banner(최상위 header) 중복 |
+| `accessibility.duplicate_contentinfo` | contentinfo(최상위 footer) 중복 |
+| `accessibility.content_outside_landmarks` | 랜드마크 밖의 본문 텍스트 |
+| `accessibility.iframe_title_duplicate` | 같은 title 을 쓰는 iframe |
+| `accessibility.html_xml_lang_mismatch` | html 의 lang 과 xml:lang 불일치 |
+| `accessibility.server_side_image_map` | 서버 측 이미지맵 (img ismap) |
+| `accessibility.definition_list_invalid` | 잘못된 정의 목록 구조 (dl·dt·dd) |
+| `accessibility.table_caption_missing` | 제목(caption) 없는 데이터 표 |
+| `accessibility.inline_spacing_important` | 글자·줄 간격을 !important 로 고정한 인라인 스타일 |
+| `accessibility.paste_blocked` | 붙여넣기를 막은 입력 요소 |
+| `accessibility.identical_link_text` | 같은 텍스트인데 목적지가 다른 링크 |
+| `accessibility.orientation_lock` | 화면 방향 고정 (orientation 미디어 쿼리 + 회전) |
 | `trust.privacy_policy` | 개인정보처리방침 링크 |
 | `trust.terms` | 이용약관 링크 |
 | `trust.phone` | 전화번호 링크 (tel:) |
@@ -353,6 +383,12 @@ Rust 1.88 이상 (CI에서 확인).
 | `security.server_header` | Server 헤더 노출 |
 | `security.x_powered_by` | X-Powered-By 헤더 노출 |
 | `security.insecure_cookies` | Secure·HttpOnly·SameSite 누락 쿠키 |
+| `security.cross_origin_opener_policy` | Cross-Origin-Opener-Policy |
+| `security.cross_origin_embedder_policy` | Cross-Origin-Embedder-Policy |
+| `security.cross_origin_resource_policy` | Cross-Origin-Resource-Policy |
+| `security.sri_missing` | SRI(integrity) 없는 외부 스크립트·스타일시트 |
+| `security.insecure_form_action` | https 페이지에서 http 로 보내는 폼 |
+| `security.target_blank_noopener` | rel=noopener 없는 새 창 링크 |
 | `performance.static_asset_cache` | 정적 리소스 Cache-Control |
 | `performance.dom_size` | DOM 크기 |
 | `performance.third_party_scripts` | 서드파티 스크립트 호스트 |
@@ -368,6 +404,7 @@ Rust 1.88 이상 (CI에서 확인).
 | `structured_data.speakable` | speakable 속성 |
 | `meta.canonical_target_noindex` | canonical 대상 페이지 noindex |
 | `meta.canonical_target_mismatch` | canonical 대상이 2xx 아님 또는 다른 canonical |
+| `meta.doctype` | HTML5 doctype (<!DOCTYPE html>) |
 | `structured_data.hreflang_reciprocal` | hreflang 상호 참조 |
 | `performance.external_css` | 외부 CSS 분석 |
 | `performance.font_face_without_display` | font-display 없는 @font-face |
@@ -381,6 +418,8 @@ Rust 1.88 이상 (CI에서 확인).
 | `performance.bfcache_blocked` | bfcache 차단 요인 (no-store, unload) |
 | `performance.large_scripts` | 큰 스크립트 파일 (500KB 초과) |
 | `performance.large_images` | 큰 이미지 파일 (500KB 초과) |
+| `performance.unminified_css` | 압축(minify)되지 않은 CSS |
+| `performance.large_gifs` | 큰 GIF 이미지 (100KB 초과) |
 | `site.pages_sampled` | 표본 페이지 수집 |
 | `site.failed_pages` | 표본 중 2xx 아닌 페이지 |
 | `site.duplicate_titles` | 페이지 간 중복 title |

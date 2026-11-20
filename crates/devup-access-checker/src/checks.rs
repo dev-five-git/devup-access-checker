@@ -133,7 +133,12 @@ pub struct PageWeight {
     pub large_scripts: Vec<(String, u64)>,
     /// [`LARGE_IMAGE_BYTES`] 를 넘는 이미지 (URL, 바이트), 큰 순
     pub large_images: Vec<(String, u64)>,
+    /// [`LARGE_GIF_BYTES`] 를 넘는 GIF (움직이는 이미지는 동영상이 훨씬 작다)
+    pub large_gifs: Vec<(String, u64)>,
 }
+
+/// 큰 GIF 기준 (Lighthouse "효율적인 애니메이션 콘텐츠" 와 같은 100KB)
+pub const LARGE_GIF_BYTES: u64 = 100 * 1024;
 
 /// 큰 스크립트 기준 (압축 해제 바이트)
 pub const LARGE_SCRIPT_BYTES: u64 = 500 * 1024;
@@ -1454,6 +1459,7 @@ pub fn build(i: &Inputs) -> Vec<Check> {
     more_checks(&mut o, i, &robots);
     canonical_hreflang_weight_checks(&mut o, i);
     deep_checks(&mut o, i);
+    rule_checks(&mut o, i);
     if let Some(site) = i.site {
         site_checks(&mut o, i, site);
     }
@@ -3481,6 +3487,366 @@ fn deep_checks(o: &mut Out, i: &Inputs) {
     }
 }
 
+/// 표준 점검 목록과 대조해 추가한 항목 (docs/coverage.md).
+fn rule_checks(o: &mut Out, i: &Inputs) {
+    use Category::*;
+    let r = &i.facts.rules;
+    let list = |v: &[String]| (!v.is_empty()).then(|| json!(v));
+    let ext_css = i.extended.external_css.as_ref();
+    let orientation =
+        i.facts.extra.inline_css.orientation_lock + ext_css.map_or(0, |c| c.facts.orientation_lock);
+    let css_bytes = i.facts.extra.inline_css.bytes + ext_css.map_or(0, |c| c.facts.bytes);
+    let css_save =
+        i.facts.extra.inline_css.minifiable_bytes + ext_css.map_or(0, |c| c.facts.minifiable_bytes);
+    let primary = |l: &str| {
+        l.split(['-', '_'])
+            .next()
+            .unwrap_or_default()
+            .to_ascii_lowercase()
+    };
+    let lang_mismatch = match (&r.html_lang, &r.xml_lang) {
+        (Some(a), Some(b)) => Presence::from_bool(primary(a) != primary(b)),
+        _ => Presence::NotApplicable,
+    };
+    let coop = header(&i.page.headers, "cross-origin-opener-policy");
+    let robots_values = [
+        i.facts.meta("robots").map(str::to_string),
+        i.facts.meta("googlebot").map(str::to_string),
+        header(&i.page.headers, "x-robots-tag"),
+    ];
+    let mut snippet: Vec<String> = Vec::new();
+    for d in robots_values.iter().flatten().flat_map(|v| v.split(',')) {
+        let d = d.trim().to_ascii_lowercase();
+        let d = d
+            .rsplit_once(": ")
+            .map_or(d.as_str(), |(_, x)| x)
+            .to_string();
+        let name = d.split(':').next().unwrap_or_default().trim();
+        if matches!(
+            name,
+            "nosnippet"
+                | "max-snippet"
+                | "max-image-preview"
+                | "max-video-preview"
+                | "noarchive"
+                | "noimageindex"
+                | "notranslate"
+                | "unavailable_after"
+                | "indexifembedded"
+        ) && !snippet.contains(&d)
+        {
+            snippet.push(d);
+        }
+    }
+    o.push(
+        "accessibility.markup_errors",
+        Accessibility,
+        "HTML 마크업 오류 (파서 오류)",
+        Presence::from_bool(r.parse_errors > 0),
+        Some(json!({ "count": r.parse_errors, "samples": r.parse_error_samples })),
+        Some("HTML 파서(html5ever)가 보고한 오류 기준. KWCAG 2.2 마크업 오류 방지".into()),
+    );
+    o.push(
+        "accessibility.aria_invalid_value",
+        Accessibility,
+        "허용되지 않는 ARIA 속성 값",
+        count_presence(r.aria_invalid_values.len(), r.aria_value_attrs),
+        list(&r.aria_invalid_values),
+        None,
+    );
+    o.push(
+        "accessibility.aria_name_prohibited",
+        Accessibility,
+        "이름을 붙일 수 없는 요소의 aria-label",
+        count_presence(r.aria_name_prohibited.len(), r.labelled_elements),
+        list(&r.aria_name_prohibited),
+        Some("역할 없는 div·span 이나 presentation·generic 등 이름이 금지된 역할".into()),
+    );
+    o.push(
+        "accessibility.aria_required_children",
+        Accessibility,
+        "필수 자식 역할이 없는 ARIA 컨테이너",
+        count_presence(r.missing_required_children.len(), r.containers),
+        list(&r.missing_required_children),
+        Some("예: role=list 안에 listitem 없음, role=tablist 안에 tab 없음".into()),
+    );
+    o.push(
+        "accessibility.aria_required_parent",
+        Accessibility,
+        "필수 부모 역할이 없는 ARIA 요소",
+        count_presence(r.missing_required_parent.len(), r.child_roles),
+        list(&r.missing_required_parent),
+        Some("예: role=tab 이 tablist 밖에 있음".into()),
+    );
+    o.push(
+        "accessibility.aria_deprecated_role",
+        Accessibility,
+        "폐기된 ARIA 역할",
+        Presence::from_bool(!r.deprecated_roles.is_empty()),
+        list(&r.deprecated_roles),
+        None,
+    );
+    o.push(
+        "accessibility.status_widget_unnamed",
+        Accessibility,
+        "이름 없는 progress·meter·tooltip",
+        count_presence(r.status_widgets_unnamed, r.status_widgets),
+        Some(json!({ "total": r.status_widgets, "unnamed": r.status_widgets_unnamed })),
+        None,
+    );
+    o.push(
+        "accessibility.label_title_only",
+        Accessibility,
+        "title 속성만으로 이름이 붙은 입력 요소",
+        count_presence(r.title_only_labels, r.form_controls),
+        Some(json!(r.title_only_labels)),
+        None,
+    );
+    o.push(
+        "accessibility.multiple_labels",
+        Accessibility,
+        "label 이 둘 이상 연결된 입력 요소",
+        count_presence(r.multiple_labels, r.form_controls),
+        Some(json!(r.multiple_labels)),
+        None,
+    );
+    o.push(
+        "accessibility.label_name_mismatch",
+        Accessibility,
+        "보이는 텍스트를 포함하지 않는 aria-label",
+        count_presence(r.label_name_mismatch.len(), r.labelled_widgets),
+        list(&r.label_name_mismatch),
+        Some("링크·버튼 기준 (보이는 텍스트 → aria-label), 글자·숫자만 비교. CSS 로 숨긴 텍스트는 구분하지 못함. KWCAG 2.2 레이블과 네임".into()),
+    );
+    o.push(
+        "accessibility.landmark_not_top_level",
+        Accessibility,
+        "다른 랜드마크 안에 든 main·banner·contentinfo",
+        if r.has_landmarks {
+            Presence::from_bool(!r.nested_top_landmarks.is_empty())
+        } else {
+            Presence::NotApplicable
+        },
+        list(&r.nested_top_landmarks),
+        None,
+    );
+    o.push(
+        "accessibility.duplicate_banner",
+        Accessibility,
+        "banner(최상위 header) 중복",
+        count_presence(usize::from(r.banners > 1), r.banners),
+        Some(json!(r.banners)),
+        None,
+    );
+    o.push(
+        "accessibility.duplicate_contentinfo",
+        Accessibility,
+        "contentinfo(최상위 footer) 중복",
+        count_presence(usize::from(r.contentinfos > 1), r.contentinfos),
+        Some(json!(r.contentinfos)),
+        None,
+    );
+    o.push(
+        "accessibility.content_outside_landmarks",
+        Accessibility,
+        "랜드마크 밖의 본문 텍스트",
+        Presence::from_bool(r.text_outside_landmarks > 0),
+        Some(json!(r.text_outside_landmarks)),
+        Some(
+            "랜드마크(header·nav·main·footer·aside·이름 있는 section 등) 밖 텍스트 글자 수".into(),
+        ),
+    );
+    o.push(
+        "accessibility.iframe_title_duplicate",
+        Accessibility,
+        "같은 title 을 쓰는 iframe",
+        count_presence(r.duplicate_iframe_titles.len(), r.titled_iframes),
+        list(&r.duplicate_iframe_titles),
+        None,
+    );
+    o.push(
+        "accessibility.html_xml_lang_mismatch",
+        Accessibility,
+        "html 의 lang 과 xml:lang 불일치",
+        lang_mismatch,
+        Some(json!({ "lang": r.html_lang, "xmlLang": r.xml_lang })),
+        None,
+    );
+    o.push(
+        "accessibility.server_side_image_map",
+        Accessibility,
+        "서버 측 이미지맵 (img ismap)",
+        Presence::from_bool(r.server_side_image_maps > 0),
+        Some(json!(r.server_side_image_maps)),
+        None,
+    );
+    o.push(
+        "accessibility.definition_list_invalid",
+        Accessibility,
+        "잘못된 정의 목록 구조 (dl·dt·dd)",
+        if r.definition_lists == 0 && r.definition_list_violations == 0 {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(r.definition_list_violations > 0)
+        },
+        Some(json!(r.definition_list_violations)),
+        None,
+    );
+    o.push(
+        "accessibility.table_caption_missing",
+        Accessibility,
+        "제목(caption) 없는 데이터 표",
+        count_presence(r.data_tables_without_caption, r.data_tables),
+        Some(json!({ "total": r.data_tables, "missing": r.data_tables_without_caption })),
+        Some("th 가 있는 표 기준. caption·aria-label·aria-labelledby 를 제목으로 봄 (KWCAG 2.2 표의 구성)".into()),
+    );
+    o.push(
+        "accessibility.inline_spacing_important",
+        Accessibility,
+        "글자·줄 간격을 !important 로 고정한 인라인 스타일",
+        Presence::from_bool(r.inline_spacing_important > 0),
+        Some(json!(r.inline_spacing_important)),
+        Some("letter-spacing·word-spacing·line-height (사용자 스타일로 조절 불가)".into()),
+    );
+    o.push(
+        "accessibility.paste_blocked",
+        Accessibility,
+        "붙여넣기를 막은 입력 요소",
+        Presence::from_bool(r.paste_blocked > 0),
+        Some(json!(r.paste_blocked)),
+        Some("onpaste 속성 기준. KWCAG 2.2 접근 가능한 인증".into()),
+    );
+    o.push(
+        "accessibility.identical_link_text",
+        Accessibility,
+        "같은 텍스트인데 목적지가 다른 링크",
+        count_presence(r.same_text_different_href.len(), r.links_with_text),
+        list(&r.same_text_different_href),
+        None,
+    );
+    o.push(
+        "accessibility.orientation_lock",
+        Accessibility,
+        "화면 방향 고정 (orientation 미디어 쿼리 + 회전)",
+        Presence::from_bool(orientation > 0),
+        Some(json!({ "inline": i.facts.extra.inline_css.orientation_lock, "external": ext_css.map(|c| c.facts.orientation_lock) })),
+        Some("HTML 안 <style> + 외부 CSS 표본 기준".into()),
+    );
+    o.push(
+        "meta.doctype",
+        Meta,
+        "HTML5 doctype (<!DOCTYPE html>)",
+        Presence::from_bool(r.has_html5_doctype),
+        None,
+        Some("없으면 브라우저가 호환(quirks) 모드로 그린다".into()),
+    );
+    o.push(
+        "content.uncrawlable_links",
+        Content,
+        "검색엔진이 따라갈 수 없는 링크 (href 없음·javascript:)",
+        count_presence(r.uncrawlable_links, r.anchors),
+        Some(json!(r.uncrawlable_links)),
+        None,
+    );
+    o.push(
+        "content.plugins",
+        Content,
+        "플러그인 콘텐츠 (Flash·Java 등)",
+        Presence::from_bool(r.plugins > 0),
+        Some(json!(r.plugins)),
+        None,
+    );
+    o.push(
+        "indexing.snippet_controls",
+        Indexing,
+        "스니펫 제한 지시어 (nosnippet·max-snippet 등)",
+        Presence::from_bool(!snippet.is_empty() || r.data_nosnippet > 0),
+        Some(json!({ "directives": snippet, "dataNosnippet": r.data_nosnippet })),
+        Some("검색 결과·AI 요약에 쓰일 수 있는 범위를 제한한다 (meta robots·googlebot·X-Robots-Tag·data-nosnippet)".into()),
+    );
+    o.push(
+        "security.cross_origin_opener_policy",
+        Security,
+        "Cross-Origin-Opener-Policy",
+        Presence::from_bool(coop.is_some()),
+        coop.map(Value::from),
+        None,
+    );
+    for (id, name, label) in [
+        (
+            "security.cross_origin_embedder_policy",
+            "cross-origin-embedder-policy",
+            "Cross-Origin-Embedder-Policy",
+        ),
+        (
+            "security.cross_origin_resource_policy",
+            "cross-origin-resource-policy",
+            "Cross-Origin-Resource-Policy",
+        ),
+    ] {
+        let v = header(&i.page.headers, name);
+        o.push(
+            id,
+            Security,
+            label,
+            Presence::from_bool(v.is_some()),
+            v.map(Value::from),
+            None,
+        );
+    }
+    o.push(
+        "security.sri_missing",
+        Security,
+        "SRI(integrity) 없는 외부 스크립트·스타일시트",
+        count_presence(r.third_party_without_sri.len(), r.third_party_resources),
+        list(&r.third_party_without_sri),
+        Some("다른 호스트에서 받는 script·stylesheet 의 호스트 목록".into()),
+    );
+    o.push(
+        "security.insecure_form_action",
+        Security,
+        "https 페이지에서 http 로 보내는 폼",
+        count_presence(r.insecure_forms.len(), r.forms),
+        list(&r.insecure_forms),
+        None,
+    );
+    o.push(
+        "security.target_blank_noopener",
+        Security,
+        "rel=noopener 없는 새 창 링크",
+        count_presence(r.blank_without_noopener, r.blank_links),
+        Some(json!({ "total": r.blank_links, "withoutNoopener": r.blank_without_noopener })),
+        Some("최신 브라우저는 target=_blank 에 noopener 를 기본 적용한다".into()),
+    );
+    o.push(
+        "performance.unminified_css",
+        Performance,
+        "압축(minify)되지 않은 CSS",
+        if css_bytes == 0 {
+            Presence::NotApplicable
+        } else {
+            Presence::from_bool(css_save > 2048 && css_save * 10 > css_bytes)
+        },
+        Some(json!({ "bytes": css_bytes, "minifiableBytes": css_save })),
+        Some("주석·불필요한 공백 기준 추정. 절감 2KB 초과이면서 10% 초과면 present".into()),
+    );
+    if let Some(w) = &i.extended.page_weight {
+        o.push(
+            "performance.large_gifs",
+            Performance,
+            "큰 GIF 이미지 (100KB 초과)",
+            count_presence(w.large_gifs.len(), w.images_checked - w.images_unknown),
+            Some(json!(
+                w.large_gifs
+                    .iter()
+                    .map(|(u, n)| json!({ "url": u, "bytes": n }))
+                    .collect::<Vec<_>>()
+            )),
+            Some("움직이는 GIF 는 동영상(mp4·webm)으로 바꾸면 크게 줄어든다".into()),
+        );
+    }
+}
+
 fn canonical_hreflang_weight_checks(o: &mut Out, i: &Inputs) {
     use Category::*;
     let ext = i.extended;
@@ -4240,6 +4606,102 @@ mod tests {
         assert_eq!(
             get(&c, "accessibility.multiple_main").presence,
             Presence::NotApplicable
+        );
+    }
+
+    #[test]
+    fn standard_rule_items() {
+        let mut fx = Fx::failing();
+        let css = format!(
+            "@media (orientation: landscape) {{ body {{ transform: rotate(-90deg) }} }}{}",
+            " ".repeat(3000)
+        );
+        let html = format!(
+            r#"<!DOCTYPE html><html lang="ko" xml:lang="en-US"><head>
+<meta name="robots" content="max-snippet:50, noarchive, index">
+<style>{css}</style></head><body><main>본문</main></body></html>"#
+        );
+        fx.page = page("https://a.com/", &html);
+        fx.page
+            .headers
+            .insert("x-robots-tag", "googlebot: nosnippet".parse().unwrap());
+        fx.page
+            .headers
+            .insert("cross-origin-opener-policy", "same-origin".parse().unwrap());
+        fx.page
+            .headers
+            .insert("cross-origin-resource-policy", "same-site".parse().unwrap());
+        fx.facts = crate::html::extract(&html, &fx.page.final_url);
+        fx.extended.page_weight = Some(PageWeight {
+            images_checked: 2,
+            large_gifs: vec![("a.gif".into(), 200_000)],
+            ..Default::default()
+        });
+        let c = fx.run();
+        for id in [
+            "meta.doctype",
+            "accessibility.html_xml_lang_mismatch",
+            "accessibility.orientation_lock",
+            "indexing.snippet_controls",
+            "security.cross_origin_opener_policy",
+            "security.cross_origin_resource_policy",
+            "performance.unminified_css",
+            "performance.large_gifs",
+        ] {
+            assert_eq!(get(&c, id).presence, Presence::Present, "{id}");
+        }
+        let s = get(&c, "indexing.snippet_controls")
+            .value
+            .as_ref()
+            .unwrap()
+            .to_string();
+        assert!(s.contains("max-snippet:50") && s.contains("noarchive") && s.contains("nosnippet"));
+        assert!(!s.contains("\"index\""));
+
+        // lang 이 같은 언어, CSS 없음
+        let html = r#"<html lang="en" xml:lang="en-GB"><body></body></html>"#;
+        fx.facts = crate::html::extract(html, &fx.page.final_url);
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "accessibility.html_xml_lang_mismatch").presence,
+            Presence::Missing
+        );
+        assert_eq!(
+            get(&c, "performance.unminified_css").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "indexing.snippet_controls").presence,
+            Presence::Present,
+            "헤더 nosnippet"
+        );
+        assert_eq!(
+            get(&c, "accessibility.definition_list_invalid").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "accessibility.landmark_not_top_level").presence,
+            Presence::NotApplicable
+        );
+
+        // xml:lang 없음, dd 만 있음
+        fx.page.headers.remove("x-robots-tag");
+        fx.facts = crate::html::extract(
+            "<html lang=ko><body><dd>x</dd><main></main></body></html>",
+            &fx.page.final_url,
+        );
+        let c = fx.run();
+        assert_eq!(
+            get(&c, "accessibility.html_xml_lang_mismatch").presence,
+            Presence::NotApplicable
+        );
+        assert_eq!(
+            get(&c, "accessibility.definition_list_invalid").presence,
+            Presence::Present
+        );
+        assert_eq!(
+            get(&c, "indexing.snippet_controls").presence,
+            Presence::Missing
         );
     }
 }

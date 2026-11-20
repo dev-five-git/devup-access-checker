@@ -23,6 +23,7 @@ mod llms;
 mod model;
 mod more;
 mod robots;
+mod rules;
 mod signals;
 mod sitemap;
 mod trust;
@@ -637,6 +638,11 @@ impl Checker {
                 .filter_map(|x| async move { x })
                 .collect()
                 .await;
+            // 크기를 알아낸 이미지
+            let sized: Vec<(String, u64)> = imgs
+                .iter()
+                .filter_map(|(u, l)| l.map(|l| (u.clone(), l)))
+                .collect();
             Some(checks::PageWeight {
                 js_total: x.script_urls.len(),
                 js_checked: js.len(),
@@ -649,9 +655,10 @@ impl Checker {
                     js.iter().map(|(u, n)| (u.clone(), *n as u64)),
                     checks::LARGE_SCRIPT_BYTES,
                 ),
-                large_images: checks::largest(
-                    imgs.iter().filter_map(|(u, l)| l.map(|l| (u.clone(), l))),
-                    checks::LARGE_IMAGE_BYTES,
+                large_images: checks::largest(sized.iter().cloned(), checks::LARGE_IMAGE_BYTES),
+                large_gifs: checks::largest(
+                    sized.iter().filter(|(u, _)| is_gif(u)).cloned(),
+                    checks::LARGE_GIF_BYTES,
                 ),
             })
         };
@@ -774,6 +781,15 @@ fn tls_result(
         ("https", None) => Err("no peer certificate".to_string()),
         _ => Ok(None),
     }
+}
+
+/// URL 경로가 .gif 로 끝나는지 (쿼리·조각 제외).
+fn is_gif(url: &str) -> bool {
+    url.split(['?', '#'])
+        .next()
+        .unwrap_or_default()
+        .to_ascii_lowercase()
+        .ends_with(".gif")
 }
 
 /// 분석할 표본을 고른다. 페이지가 순서를 바꿔 내려줘도 같은 결과가 나오도록 정렬·중복 제거 후 앞에서 `n` 개.
@@ -1008,6 +1024,12 @@ mod tests {
         let b: Vec<String> = ["b", "a", "c"].map(String::from).to_vec();
         assert_eq!(sample(&a, 2), sample(&b, 2));
         assert_eq!(sample(&a, 10).len(), 3);
+    }
+
+    #[test]
+    fn gif_detection_ignores_query() {
+        assert!(is_gif("https://a.com/x.GIF?v=1"));
+        assert!(!is_gif("https://a.com/x.png#gif"));
     }
 
     #[test]
